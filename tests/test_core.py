@@ -126,14 +126,16 @@ class QueueTests(unittest.TestCase):
     def test_mutation_after_approval_blocks_upload(self):
         job = self.add(); self.queue.approve(job["id"])
         self.path.write_bytes(b"changed")
-        with self.assertRaises(ValueError):
-            self.queue.run(self.config,execute=True,uploader=lambda *args: "bad")
+        uploader = unittest.mock.Mock(return_value="bad")
+        self.assertEqual(self.queue.run(self.config,execute=True,uploader=uploader)[0]["status"], "failed")
+        uploader.assert_not_called()
 
     def test_permission_is_rechecked_at_execution(self):
         job = self.add(); self.queue.approve(job["id"])
         self.config["sources"][0]["permission"]["allow_publish"] = False
-        with self.assertRaises(ValueError):
-            self.queue.run(self.config,execute=True,uploader=lambda *args: "bad")
+        uploader = unittest.mock.Mock(return_value="bad")
+        self.assertEqual(self.queue.run(self.config,execute=True,uploader=uploader)[0]["status"], "failed")
+        uploader.assert_not_called()
 
     def test_future_job_waits(self):
         job = self.add(schedule=(dt.datetime.now(dt.timezone.utc)+dt.timedelta(days=1)).isoformat())

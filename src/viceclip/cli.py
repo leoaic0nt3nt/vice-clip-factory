@@ -29,10 +29,34 @@ def plan_media(input_path, config, source_id, transcript_path, top, min_duration
 
 
 def parser():
-    root = argparse.ArgumentParser(prog="viceclip", description="Rights-aware gameplay clip orchestration MVP")
+    root = argparse.ArgumentParser(prog="viceclip", description="Vice Clip Factory · автоматические клипы и публикации")
     root.add_argument("--version", action="version", version=__version__)
     commands = root.add_subparsers(dest="command", required=True)
     commands.add_parser("doctor")
+    from .onboarding import default_config_path
+    p = commands.add_parser("setup",help="Мастер первого запуска Vice Clip Factory")
+    p.add_argument("--config",default=str(default_config_path()))
+    p.add_argument("--non-interactive",action="store_true")
+    p.add_argument("--source",action="append",default=[])
+    p.add_argument("--inbox");p.add_argument("--no-asr",action="store_true")
+    p.add_argument("--execute",action="store_true");p.add_argument("--accept-terms",action="store_true")
+    p = commands.add_parser("connect",help="Подключить ещё один канал")
+    p.add_argument("platform",choices=["youtube","instagram"])
+    p.add_argument("--config",default=str(default_config_path()))
+    p.add_argument("--name",required=True)
+    p.add_argument("--client-secrets");p.add_argument("--token-env",default="INSTAGRAM_ACCESS_TOKEN")
+    p = commands.add_parser("autopilot",help="Постоянная работа, расписание и управление")
+    actions=p.add_subparsers(dest="action",required=True)
+    for action in ("tick","run","start","stop","status","logs","pause","resume"):
+        q=actions.add_parser(action)
+        q.add_argument("--config",default=str(default_config_path()))
+        if action in ("tick","run","start"):
+            mode=q.add_mutually_exclusive_group()
+            mode.add_argument("--execute",dest="execute",action="store_const",const=True,default=None)
+            mode.add_argument("--preview",dest="execute",action="store_const",const=False)
+        if action=="run":q.add_argument("--interval",type=float)
+        if action=="start":q.add_argument("--persistent",action="store_true")
+        if action=="logs":q.add_argument("--lines",type=int,default=40)
     p = commands.add_parser("analyze")
     p.add_argument("input"); p.add_argument("--output", default="output/analysis.json")
     p = commands.add_parser("plan")
@@ -78,11 +102,70 @@ def parser():
 
 
 def main(argv=None):
+    from .network import configure_certificates
+    configure_certificates()
     args = parser().parse_args(argv)
     try:
-        config = load_config(args.config) if hasattr(args, "config") else None
+        config = load_config(args.config) if hasattr(args, "config") and args.command not in ("setup","autopilot") else None
         result = None
-        if args.command == "doctor":
+        if args.command == "setup":
+            from .onboarding import setup
+            result=setup(args.config,non_interactive=args.non_interactive,sources=args.source,inbox=args.inbox,
+                         no_asr=args.no_asr,execute=args.execute,accept_terms=args.accept_terms)
+        elif args.command == "connect":
+            import os
+            import re
+            from .onboarding import private_json
+            if not re.fullmatch(r"[A-Za-z0-9_-]{1,50}",args.name):
+                raise ValueError("Имя канала: латинские буквы, цифры, дефис или подчёркивание")
+            if any(a["id"]==args.name for a in config.get("accounts",[])):
+                raise ValueError("Канал с таким именем уже подключён")
+            token_file=Path(args.config).resolve().parent/"secrets"/(args.name+".json")
+            if args.platform=="youtube":
+                from .auth import connect_youtube
+                if not args.client_secrets:raise ValueError("Укажите --client-secrets с файлом подключения Google")
+                info=connect_youtube(args.client_secrets,token_file)
+            else:
+                from .auth import connect_instagram
+                token=os.environ.get(args.token_env)
+                if not token:raise ValueError("Передайте токен в переменную "+args.token_env)
+                info=connect_instagram(token,token_file)
+            config.setdefault("accounts",[]).append({"id":args.name,"platform":args.platform,
+                "commercial":True,"max_posts_per_day":3,**info})
+            config.setdefault("autopilot",{}).setdefault("accounts",[]).append(args.name)
+            private_json(args.config,config)
+            result={"connected":args.name,"platform":args.platform,"remote_id":info["remote_id"]}
+        elif args.command == "autopilot":
+            from . import service
+            if args.action == "status":
+                result={"service":service.service_status(args.config)}
+                try:
+                    from .autopilot import Autopilot
+                    pilot=Autopilot(args.config)
+                    try:result["autopilot"]=pilot.status()
+                    finally:pilot.close()
+                except (ValueError,OSError,KeyError) as exc:
+                    result["configuration_error"]=str(exc)
+            elif args.action in ("tick","run"):
+                from .autopilot import Autopilot
+                pilot=Autopilot(args.config)
+                try:
+                    if args.action=="tick":result=pilot.tick(execute=args.execute)
+                    elif args.action=="run":result=pilot.run(execute=args.execute,interval=args.interval)
+                finally:pilot.close()
+            elif args.action=="start":
+                load_config(args.config)
+                result=service.start(args.config,execute=args.execute,persistent=args.persistent)
+            elif args.action=="stop":result=service.stop(args.config)
+            elif args.action=="logs":
+                print(service.logs(args.config,args.lines));return 0
+            else:
+                from .onboarding import private_json
+                config=load_config(args.config)
+                config.setdefault("autopilot",{})["enabled"]=args.action=="resume"
+                private_json(args.config,config)
+                result={"enabled":config["autopilot"]["enabled"]}
+        elif args.command == "doctor":
             result = {"version": __version__, "tools": doctor(), "note": "Core render uses FFmpeg + Pillow; libass is optional. ASR/scenes/auto-editor are optional upstream installs."}
         elif args.command == "analyze":
             result = analyze(args.input); save(args.output, result)
@@ -142,6 +225,9 @@ def main(argv=None):
     except subprocess.CalledProcessError as error:
         print(f"viceclip: upstream command failed with exit code {error.returncode}; inspect its diagnostic above",file=sys.stderr)
         return 1
+    except KeyboardInterrupt:
+        print("Vice Clip Factory остановлен",file=sys.stderr)
+        return 130
     except (ValueError, RuntimeError, OSError, KeyError) as error:
         print(f"viceclip: {error}", file=sys.stderr)
         return 1

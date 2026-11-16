@@ -26,3 +26,7 @@ The original Instagram references and design-reference PDF are not redistributed
 
 This repository is unaffiliated with Rockstar, Take-Two, Twitch, Google, Meta,
 Remotion and the listed maintainers. No gameplay or music license is granted.
+
+## GTA VI game mark
+
+The game-identification mark in assets/gta-vi-logo.png is an original downloaded asset from [Rockstar's GTA VI website](https://www.rockstargames.com/VI). Source URL and checksum: assets/gta-vi-logo.source.json. The trimmed placement copy preserves visible pixels. This mark is not included in the root MIT grant. Vice Clip Factory is independent and claims no Rockstar/Take-Two affiliation or endorsement.

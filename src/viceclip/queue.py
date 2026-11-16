@@ -6,6 +6,7 @@ from pathlib import Path
 from .media import fingerprint
 from .rights import check_rights, get_account
 from . import publishers
+from .storage import configured as storage_configured
 
 
 def utcnow():
@@ -59,8 +60,9 @@ class Queue:
         when = canonical_time(schedule)
         if not metadata.get("title"):
             raise ValueError("Title is required")
-        if account["platform"] == "instagram" and not metadata.get("public_url", "").startswith("https://"):
-            raise ValueError("Instagram queue job requires a public HTTPS media URL")
+        if (account["platform"] == "instagram" and not (metadata.get("public_url") or "").startswith("https://")
+                and not storage_configured(account.get("storage", config.get("storage")))):
+            raise ValueError("Connect cloud media delivery or provide a public HTTPS media URL for Instagram")
         with self.db:
             self.db.execute("INSERT OR IGNORE INTO jobs(sha256,account,platform,source_id,file,metadata,scheduled_at) VALUES(?,?,?,?,?,?,?)",
                             (digest, account_id, account["platform"], source_id, str(path), json.dumps(metadata, ensure_ascii=False), when))
@@ -91,16 +93,29 @@ class Queue:
 
     def run(self, config, *, execute=False, uploader=None):
         results = []
-        for raw in self.db.execute("SELECT * FROM jobs WHERE status='approved' AND scheduled_at<=? ORDER BY scheduled_at,id", (utcnow().isoformat(),)).fetchall():
+        for raw in self.db.execute("SELECT * FROM jobs WHERE status IN ('approved','processing') AND scheduled_at<=? ORDER BY scheduled_at,id", (utcnow().isoformat(),)).fetchall():
             job = dict(raw)
             job["metadata"] = json.loads(job["metadata"])
-            account = get_account(config, job["account"])
-            check_rights(config, job["source_id"], "publish", job["platform"],
-                         commercial=account.get("commercial", False), sponsored=job["metadata"].get("sponsored", False))
-            if fingerprint(job["file"]) != job["sha256"]:
-                raise ValueError(f"Job {job['id']} file changed after approval")
-            if job["metadata"].get("sidecar_path") and fingerprint(job["metadata"]["sidecar_path"]) != job["metadata"]["sidecar_sha256"]:
-                raise ValueError(f"Job {job['id']} render provenance changed after approval")
+            try:
+                account = dict(get_account(config, job["account"]))
+                account["_storage"] = account.get("storage", config.get("storage"))
+                daily_limit = int(account.get("max_posts_per_day", 3))
+                if daily_limit < 1:
+                    raise ValueError("Account daily publishing limit must be positive")
+                check_rights(config, job["source_id"], "publish", job["platform"],
+                             commercial=account.get("commercial", False), sponsored=job["metadata"].get("sponsored", False))
+                if fingerprint(job["file"]) != job["sha256"]:
+                    raise ValueError(f"Job {job['id']} file changed after approval")
+                if job["metadata"].get("sidecar_path") and fingerprint(job["metadata"]["sidecar_path"]) != job["metadata"]["sidecar_sha256"]:
+                    raise ValueError(f"Job {job['id']} render provenance changed after approval")
+            except (ValueError, OSError, KeyError, TypeError) as exc:
+                with self.db:
+                    self.db.execute("UPDATE jobs SET status='failed',error=? WHERE id=?", (str(exc)[:300], job["id"]))
+                results.append({"id": job["id"], "status": "failed", "error": str(exc)[:300]})
+                continue
+            if account.get("enabled") is False:
+                results.append({"id": job["id"], "status": "account_paused", "account": job["account"]})
+                continue
             if not execute:
                 results.append({"id": job["id"], "status": "dry_run", "account": job["account"], "platform": job["platform"]})
                 continue
@@ -114,12 +129,12 @@ class Queue:
                     continue
             self.db.execute("BEGIN IMMEDIATE")
             since = (utcnow()-dt.timedelta(days=1)).isoformat()
-            used = self.db.execute("SELECT count(*) FROM jobs WHERE account=? AND platform=? AND (status IN ('uploading','unknown') OR (status IN ('published','uploaded') AND published_at>=?))", (job["account"], job["platform"], since)).fetchone()[0]
-            if used >= int(account.get("max_posts_per_day", 3)):
+            used = self.db.execute("SELECT count(*) FROM jobs WHERE account=? AND platform=? AND id<>? AND (status IN ('uploading','processing','unknown') OR (status IN ('published','uploaded') AND published_at>=?))", (job["account"], job["platform"], job["id"], since)).fetchone()[0]
+            if used >= daily_limit:
                 self.db.rollback()
                 results.append({"id": job["id"], "status": "account_limit"})
                 continue
-            claimed = self.db.execute("UPDATE jobs SET status='uploading' WHERE id=? AND status='approved'", (job["id"],)).rowcount
+            claimed = self.db.execute("UPDATE jobs SET status='uploading' WHERE id=? AND status IN ('approved','processing')", (job["id"],)).rowcount
             self.db.commit()
             if not claimed:
                 continue
@@ -141,7 +156,13 @@ class Queue:
                     self.db.execute("UPDATE jobs SET status=?,remote_id=?,published_at=? WHERE id=?", (accepted_status,str(remote_id),utcnow().isoformat(),job["id"]))
                 results.append({"id": job["id"], "status": accepted_status, "remote_id": remote_id, "playback_verified": False})
             except Exception as exc:
-                status = "failed" if isinstance(exc,ValueError) and not mutated else "unknown"
+                if isinstance(exc, (publishers.PendingUpload, publishers.DeferredUpload)):
+                    when = (utcnow() + dt.timedelta(seconds=exc.delay_seconds)).isoformat()
+                    with self.db:
+                        self.db.execute("UPDATE jobs SET status='processing',scheduled_at=?,error=? WHERE id=?", (when,str(exc)[:300],job["id"]))
+                    results.append({"id": job["id"], "status": "processing", "retry_at": when})
+                    continue
+                status = "failed" if isinstance(exc,publishers.RejectedUpload) or isinstance(exc,ValueError) and not mutated else "unknown"
                 with self.db:
                     self.db.execute("UPDATE jobs SET status=?,error=? WHERE id=?", (status,str(exc)[:300],job["id"]))
                 results.append({"id": job["id"], "status": status, "error": str(exc)[:300]})

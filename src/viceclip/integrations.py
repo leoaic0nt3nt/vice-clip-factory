@@ -72,6 +72,10 @@ def download(config, source_id, output_dir):
                "-f", "bv[ext=mp4][vcodec^=avc1][height<=1080]+ba[ext=m4a]/b[ext=mp4][height<=1080]/b",
                "--merge-output-format", "mp4", "-P", str(out), "-o", "%(extractor)s-%(id)s.%(ext)s",
                "--print", "after_move:filepath", "--", url]
+    if config.get("autopilot"):
+        budget=int(config["autopilot"].get("max_download_bytes",2*1024**3))
+        if budget<=0:raise ValueError("Максимальный размер исходника должен быть положительным")
+        command[1:1]=["--max-filesize",str(budget)]
     result = subprocess.run(command, capture_output=True, text=True)
     if result.returncode:
         raise RuntimeError("yt-dlp could not download this approved source; inspect upstream CLI access/auth requirements")

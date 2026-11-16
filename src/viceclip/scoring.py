@@ -53,11 +53,17 @@ def select_candidates(analysis, transcript, *, top=3, min_duration=12, max_durat
         setup = any(k in text for k in SETUP)
         payoff = any(k in text for k in PAYOFF)
         structure = .5 * setup + .5 * payoff
-        score = round(100 * (.4*event + .2*audio_score + .2*motion_score + .2*structure), 1)
-        title = next((s["text"].strip() for s in segments if any(k in s["text"].lower() for k in EVENTS)), "A moment worth reviewing")
+        if segments:
+            score = round(100 * (.4*event + .2*audio_score + .2*motion_score + .2*structure), 1)
+            mode = "speech_audio_motion"
+        else:
+            signals = ([audio_score] if local_audio else []) + ([motion_score] if local_motion else [])
+            score = round(100 * _mean(signals), 1)
+            mode = "audio_motion"  # No unavailable speech component can make action clips impossible to qualify.
+        title = next((s["text"].strip() for s in segments if any(k in s["text"].lower() for k in EVENTS)), "Игровой момент")
         candidates.append({"start": round(start, 3), "end": round(end, 3), "score": score,
                            "hook": title[:95], "evidence": {"event_keywords": hits, "audio_energy": round(audio_score, 3),
-                           "motion": round(motion_score, 3), "setup": setup, "payoff": payoff},
+                           "motion": round(motion_score, 3), "setup": setup, "payoff": payoff, "mode": mode},
                            "review_required": True})
     chosen = []
     for candidate in sorted(candidates, key=lambda x: (-x["score"], x["start"])):

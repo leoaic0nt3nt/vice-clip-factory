@@ -40,6 +40,13 @@ def parser():
     p.add_argument("--source",action="append",default=[])
     p.add_argument("--inbox");p.add_argument("--no-asr",action="store_true")
     p.add_argument("--execute",action="store_true");p.add_argument("--accept-terms",action="store_true")
+    p = commands.add_parser("promo",help="Реклама и ссылка для новых YouTube-клипов")
+    p.add_argument("--config",default=str(default_config_path()))
+    p.add_argument("--text");p.add_argument("--url")
+    p.add_argument("--position",choices=["top","bottom"])
+    promo_action=p.add_mutually_exclusive_group()
+    promo_action.add_argument("--show",action="store_true")
+    promo_action.add_argument("--off",action="store_true")
     p = commands.add_parser("connect",help="Подключить ещё один канал")
     p.add_argument("platform",choices=["youtube","instagram"])
     p.add_argument("--config",default=str(default_config_path()))
@@ -112,6 +119,21 @@ def main(argv=None):
             from .onboarding import setup
             result=setup(args.config,non_interactive=args.non_interactive,sources=args.source,inbox=args.inbox,
                          no_asr=args.no_asr,execute=args.execute,accept_terms=args.accept_terms)
+        elif args.command == "promo":
+            from . import promo
+            if args.off:
+                result=promo.disable(args.config)
+            elif args.show:
+                result=promo.status(args.config)
+            else:
+                from .onboarding import ask
+                if not args.text or not args.url or not args.position:
+                    print("Плашка добавляется в новые YouTube-клипы. Instagram получает чистый ролик.")
+                    print("Разместите свою ссылку в профиле канала один раз; текст в самом видео не кликабелен.")
+                text=args.text or ask("Текст плашки","ТВОЙ ПРОДУКТ · ССЫЛКА В ПРОФИЛЕ")
+                url=args.url or ask("Ссылка на продукт или ваша реферальная ссылка (HTTPS)")
+                position=args.position or ask("Положение: top - сверху, bottom - снизу","bottom")
+                result=promo.configure(args.config,text=text,url=url,position=position)
         elif args.command == "connect":
             import os
             import re

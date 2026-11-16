@@ -45,7 +45,9 @@ def main():
         archive.writestr(prefix+'README_FIRST.txt',
             'VICE CLIP FACTORY\n\n1. Open Terminal in this folder and run: bash install.sh\n'
             '2. Activate the environment as printed, then: viceclip setup\n'
-            '3. Start: viceclip autopilot start --persistent\n\n'
+            '3. Configure promotion if needed: viceclip promo\n'
+            '4. Preview: viceclip autopilot tick --preview\n'
+            '5. Publish: viceclip autopilot start --persistent --execute\n\n'
             'Russian guide: output/pdf/GTA-VI-Clip-Factory-Guide-by-Leo.pdf\n'
             'Account connection: docs/CONNECT_ACCOUNTS.md\n'
             'Your credentials and computer/server remain under your control.\n')

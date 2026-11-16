@@ -34,14 +34,14 @@ Style: Ad,Arial,34,&H00100A09,&H000000FF,&H00100A09,&H90000000,-1,0,0,0,100,100,
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
     if style.get("sponsor_position", "bottom") == "top":
-        header = header.replace("Style: Hook,Arial,67", "Style: Hook,Arial,60").replace("8,85,85,285,1", "8,85,85,250,1")
-        header = header.replace("Style: Ad,Arial,34,&H00100A09,&H000000FF,&H00100A09,&H90000000,-1,0,0,0,100,100,0,0,1,0,0,2,80,80,275,1", "Style: Ad,Arial,34,&H00FFFFFF,&H000000FF,&H00100A09,&H90000000,-1,0,0,0,100,100,0,0,1,0,0,8,80,80,540,1")
+        header = header.replace("Style: Hook,Arial,67", "Style: Hook,Arial,48").replace("8,85,85,285,1", "8,85,85,230,1")
+        header = header.replace("Style: Ad,Arial,34,&H00100A09,&H000000FF,&H00100A09,&H90000000,-1,0,0,0,100,100,0,0,1,0,0,2,80,80,275,1", "Style: Ad,Arial,30,&H00FFFFFF,&H000000FF,&H00100A09,&H90000000,-1,0,0,0,100,100,0,0,1,0,0,8,80,80,510,1")
     else:
         header = header.replace("Style: Ad,Arial,34,&H00100A09", "Style: Ad,Arial,34,&H00FFFFFF")
     events = [f"Dialogue: 1,0:00:00.00,{_time(duration)},Brand,,0,0,0,,{_ass_text(style.get('brand', '@leo_ai_content'))}"]
     events.append(f"Dialogue: 2,0:00:00.00,{_time(min(5,duration))},Hook,,0,0,0,,{_ass_text(hook)}")
     if style.get("sponsor_text"):
-        prefix = "Реклама / Paid promotion: " if style.get("sponsored") else "DEMO SLOT: "
+        prefix = "Реклама: " if style.get("sponsored") else "DEMO SLOT: "
         events.append(f"Dialogue: 3,0:00:00.00,{_time(duration)},Ad,,0,0,0,,{_ass_text(prefix+style['sponsor_text'])}")
     for s in captions:
         events.append(f"Dialogue: 4,{_time(s['start'])},{_time(s['end'])},Caption,,0,0,0,,{_ass_text(s['text'])}")
@@ -82,8 +82,9 @@ def render(input_path, plan, output_dir, style=None, top=None):
         # Full landscape picture fits inside portrait; never discard a crosshair/HUD.
         layout = "[vc]scale=1080:1080:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:color=0x0A1022,setsar=1,fps=30"
         if style.get("sponsor_text"):
-            position = 500 if style.get("sponsor_position", "bottom") == "top" else 1500
-            layout += f",drawbox=x=60:y={position}:w=960:h=175:color=0x234DFF:t=fill"
+            top = style.get("sponsor_position", "bottom") == "top"
+            position,height = (490,150) if top else (1500,175)
+            layout += f",drawbox=x=60:y={position}:w=960:h={height}:color=0x234DFF:t=fill"
         filters.append(layout + "[layout]")
         command = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-filter_complex_threads", "1", "-i", str(Path(input_path).resolve())]
         if has_filter("ass"):

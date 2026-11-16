@@ -87,5 +87,39 @@ class ProductTests(unittest.TestCase):
         quiet=select_candidates({'duration':30,'audio_dbfs':[-70]*30,'motion':[0]*30},[],top=1)[0]
         self.assertLess(quiet['score'],45)
 
+    def test_promo_cli_saves_real_customer_settings(self):
+        path=self.root/'config.json'
+        private_json(path,base_config(path))
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            code=main(['promo','--config',str(path),'--text','Мой продукт · Ссылка в профиле',
+                       '--url','https://example.test/?ref=buyer','--position','bottom'])
+        self.assertEqual(code,0)
+        receipt=json.loads(out.getvalue())
+        self.assertEqual(receipt['applies_to'],'new_renders_only')
+        campaign=load_config(path)['campaign']
+        self.assertTrue(campaign['sponsored'])
+        self.assertEqual(campaign['platforms'],['youtube'])
+        self.assertIn('ref=buyer',campaign['url'])
+
+    def test_promo_cli_wizard_has_three_actual_inputs(self):
+        path=self.root/'config.json'
+        private_json(path,base_config(path))
+        with patch('builtins.input',side_effect=['Продукт · Ссылка в профиле','https://example.test/offer','top']) as inputs,contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(main(['promo','--config',str(path)]),0)
+        self.assertEqual(inputs.call_count,3)
+        self.assertEqual(load_config(path)['campaign']['position'],'top')
+
+    def test_promo_show_is_read_only_and_off_keeps_profile(self):
+        path=self.root/'config.json'
+        private_json(path,base_config(path))
+        original=path.read_bytes()
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(main(['promo','--show','--config',str(path)]),0)
+            self.assertEqual(path.read_bytes(),original)
+            self.assertEqual(main(['promo','--off','--config',str(path)]),0)
+        config=load_config(path)
+        self.assertFalse(config['campaign']['enabled'])
+        self.assertEqual(config['sources'][0]['id'],'inbox')
+
 
 if __name__=='__main__':unittest.main()

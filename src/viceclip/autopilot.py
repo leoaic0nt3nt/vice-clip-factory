@@ -27,6 +27,7 @@ from . import integrations
 from .media import fingerprint, probe
 from .queue import Queue
 from .rights import load_config
+from . import promo
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -444,7 +445,7 @@ class Autopilot:
         result_file = work / "result.json"
         if result_file.exists():
             result = json.loads(result_file.read_text())
-            if all(Path(item["file"]).is_file() and fingerprint(item["file"]) == item["sha256"] for item in result["clips"]):
+            if promo.valid_result_files(result, fingerprint):
                 return result
             raise ValueError("Saved render changed; inspect the run directory before retry")
         info = probe(input_path)
@@ -452,6 +453,8 @@ class Autopilot:
         if duration > float(self.settings.get("max_source_seconds", 10800)):
             raise ValueError("Source exceeds max_source_seconds; use bounded segments or a shorter source")
         if self.settings.get("engine", "baseline") == "medusa":
+            if promo.active_campaign(runtime):
+                raise ValueError("Рекламный режим использует стандартный движок: выберите autopilot.engine=baseline")
             return self._medusa(source, input_path, work, runtime)
         from .cli import plan_media
         from .render import render
@@ -475,7 +478,13 @@ class Autopilot:
             plan = plan_media(input_path, runtime, source["id"], transcript,
                               int(self.settings.get("clips_per_source", 3)),
                               float(self.settings.get("min_clip_seconds", 15)), float(self.settings.get("max_clip_seconds", 55)))
+            # Freeze the appearance at planning time. Updating promo never rewrites
+            # an interrupted run or previously queued media under its old hash.
+            plan["_render_style"] = promo.base_style(runtime)
+            plan["_campaign"] = promo.active_campaign(runtime)
             _save(plan_file, plan)
+        render_style = plan.get("_render_style", runtime.get("style", {}))
+        campaign = plan.get("_campaign")
         self._set(self.current_key, stage="planned")
         clips = []
         for candidate in plan["clips"]:
@@ -491,9 +500,26 @@ class Autopilot:
                 if target.exists():
                     # Preserve an interrupted export for diagnostics; never publish it.
                     target.rename(target.with_suffix(".interrupted-" + str(int(self.clock())) + ".mp4"))
-                render(input_path, {**plan, "clips": [candidate]}, work / "clips", runtime.get("style", {}))
-            clips.append({"file": str(target), "sha256": fingerprint(target), "score": candidate["score"],
-                          "title": candidate["hook"], "source_id": source["id"]})
+                render(input_path, {**plan, "clips": [candidate]}, work / "clips", render_style)
+            clip = {"file": str(target), "sha256": fingerprint(target), "score": candidate["score"],
+                    "title": candidate["hook"], "source_id": source["id"],
+                    "sponsored": bool(render_style.get("sponsored", False))}
+            if campaign:
+                promo_dir = work / "clips" / "youtube-promo"
+                variant = promo_dir / (candidate["id"] + ".mp4")
+                variant_sidecar = variant.with_suffix(".json")
+                ready = False
+                if variant.exists() and variant_sidecar.exists():
+                    existing = json.loads(variant_sidecar.read_text())
+                    ready = (existing.get("output_sha256") == fingerprint(variant)
+                             and existing.get("sponsored") is True)
+                if not ready:
+                    if variant.exists():
+                        variant.rename(variant.with_suffix(".interrupted-" + str(int(self.clock())) + ".mp4"))
+                    render(input_path, {**plan, "clips": [candidate]}, promo_dir, promo.youtube_style(render_style, campaign))
+                clip["variants"] = {"youtube": {"file": str(variant), "sha256": fingerprint(variant),
+                    "sponsored": True, "caption": promo.campaign_caption(campaign)}}
+            clips.append(clip)
         result = {"engine": "baseline", "input_sha256": fingerprint(input_path), "clips": clips}
         _save(result_file, result)
         return result
@@ -550,12 +576,18 @@ class Autopilot:
             for account in accounts:
                 if "platforms" in source and account["platform"] not in source["platforms"]:
                     continue
-                metadata = {"title": clip["title"][:100], "caption": account.get("caption", self.settings.get("caption", "")),
+                selected = clip.get("variants", {}).get(account["platform"], clip)
+                if not Path(selected["file"]).is_file() or fingerprint(selected["file"]) != selected["sha256"]:
+                    raise ValueError("Saved platform variant changed; refusing publication")
+                caption = account.get("caption", self.settings.get("caption", ""))
+                if selected.get("caption"):
+                    caption = "\n\n".join(value for value in (caption, selected["caption"]) if value)
+                metadata = {"title": clip["title"][:100], "caption": caption,
                             "privacy": account.get("privacy", self.settings.get("privacy", "private")),
-                            "sponsored": runtime.get("style", {}).get("sponsored", False)}
-                if clip.get("public_url"):
-                    metadata["public_url"] = clip["public_url"]
-                job = queue.add(clip["file"], source["id"], account["id"], metadata, runtime, self._schedule(queue, account["id"]))
+                            "sponsored": selected.get("sponsored", clip.get("sponsored", runtime.get("style", {}).get("sponsored", False)))}
+                if selected.get("public_url"):
+                    metadata["public_url"] = selected["public_url"]
+                job = queue.add(selected["file"], source["id"], account["id"], metadata, runtime, self._schedule(queue, account["id"]))
                 if self.settings.get("auto_approve", True) is True and job["status"] == "pending":
                     queue.approve(job["id"])
                 jobs.append({"id": job["id"], "account": account["id"], "platform": account["platform"]})
@@ -592,7 +624,7 @@ class Autopilot:
         route = self._routing_signature()
         for row in self.db.execute("SELECT * FROM media_jobs WHERE stage='done' AND updated_at<? AND routing_signature=?", (cutoff, route)).fetchall():
             result = json.loads(row["result"] or '{}')
-            files = [clip["file"] for clip in result.get("clips", [])]
+            files = [asset["file"] for asset in promo.assets(result)]
             statuses = [job[0] for file in files for job in queue.db.execute("SELECT status FROM jobs WHERE file=?", (file,))]
             if not statuses or any(status not in ("uploaded", "published") for status in statuses):
                 continue
@@ -669,7 +701,7 @@ class Autopilot:
                                 raise ValueError("Input changed during a saved run")
                             self._set(raw["key"], input_path=str(path), input_sha=digest, stage="downloaded", error=None)
                             result = self._process(source, path, work, runtime)
-                        if result.get("input_sha256") != digest or any(not Path(clip["file"]).is_file() or fingerprint(clip["file"]) != clip["sha256"] for clip in result["clips"]):
+                        if result.get("input_sha256") != digest or not promo.valid_result_files(result, fingerprint):
                             raise ValueError("Saved render bytes do not match the completed run")
                         if not result_file.exists():
                             _save(result_file, result)

@@ -46,10 +46,10 @@ def plates(output_dir, cid, captions, hook, duration, style):
         plate(path,text,top,size,color,width,style.get("font_path"))
         result.append((path,start,end))
     add("brand",style.get("brand","@leo_ai_content"),140,32,0,duration,"#5274FF")
-    add("hook",hook,250 if style.get("sponsor_position")=="top" else 285,60 if style.get("sponsor_position")=="top" else 65,0,min(5,duration))
+    add("hook",hook,230 if style.get("sponsor_position")=="top" else 285,48 if style.get("sponsor_position")=="top" else 65,0,min(5,duration))
     if style.get("sponsor_text"):
-        prefix = "Реклама / Paid promotion: " if style.get("sponsored") else "DEMO SLOT: "
-        add("sponsor",prefix+style["sponsor_text"],540 if style.get("sponsor_position")=="top" else 1550,34,0,duration,width=870)
+        prefix = "Реклама: " if style.get("sponsored") else "DEMO SLOT: "
+        add("sponsor",prefix+style["sponsor_text"],510 if style.get("sponsor_position")=="top" else 1550,30 if style.get("sponsor_position")=="top" else 34,0,duration,width=870)
     for index,s in enumerate(captions):
         # Preserve every word in long WhisperX sentence segments using timed chunks.
         words = str(s["text"]).split()

@@ -25,4 +25,3 @@ config.local.json
 credentials*.json
 client_secret*.json
 examples/demo-source.mp4
-

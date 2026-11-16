@@ -1,0 +1,89 @@
+{
+  "sources": [
+    {
+      "id": "demo",
+      "url": "",
+      "creator": "Original synthetic fixture, not GTA gameplay",
+      "permission": {
+        "status": "owned",
+        "reference": "scripts/make_demo.py - original procedural test fixture, MIT",
+        "allow_download": false,
+        "allow_edit": true,
+        "allow_publish": true,
+        "publisher_commercial": true,
+        "allow_sponsorship": true
+      },
+      "platforms": [
+        "youtube",
+        "instagram"
+      ]
+    }
+  ],
+  "creators": [
+    {
+      "id": "your-permitted-youtube-creator",
+      "enabled": false,
+      "platform": "youtube",
+      "remote_id": "REPLACE_CHANNEL_ID",
+      "api_key_env": "YOUTUBE_API_KEY",
+      "destinations": [
+        "youtube",
+        "instagram"
+      ],
+      "permission": {
+        "status": "unverified",
+        "scope": "single_upload",
+        "reference": "Replace only after obtaining documented creator and game rights",
+        "allow_download": false,
+        "allow_edit": false,
+        "allow_publish": false,
+        "publisher_commercial": false,
+        "allow_sponsorship": false
+      }
+    },
+    {
+      "id": "your-permitted-twitch-creator",
+      "enabled": false,
+      "platform": "twitch",
+      "remote_id": "REPLACE_BROADCASTER_ID",
+      "token_env": "TWITCH_ACCESS_TOKEN",
+      "client_id_env": "TWITCH_CLIENT_ID",
+      "destinations": [
+        "youtube",
+        "instagram"
+      ],
+      "permission": {
+        "status": "unverified",
+        "reference": "No permissions granted by discovery"
+      }
+    }
+  ],
+  "accounts": [
+    {
+      "id": "youtube-main",
+      "platform": "youtube",
+      "remote_id": "REPLACE_CHANNEL_ID",
+      "token_env": "YOUTUBE_MAIN_ACCESS_TOKEN",
+      "oauth_token_file": ".secrets/youtube-main.json",
+      "max_posts_per_day": 3,
+      "commercial": false
+    },
+    {
+      "id": "instagram-main",
+      "platform": "instagram",
+      "remote_id": "REPLACE_IG_USER_ID",
+      "token_env": "INSTAGRAM_MAIN_ACCESS_TOKEN",
+      "api_base": "https://graph.instagram.com/v27.0",
+      "max_posts_per_day": 3,
+      "commercial": false
+    }
+  ],
+  "style": {
+    "brand": "@leo_ai_content",
+    "sponsor_text": "YOUR BRAND / GAMEPLAY LAB",
+    "sponsored": false,
+    "trim_silence": true,
+    "preset": "veryfast",
+    "sponsor_position": "bottom"
+  }
+}

@@ -1,0 +1,27 @@
+[submodule "upstream/yt-dlp"]
+	path = upstream/yt-dlp
+	url = https://github.com/yt-dlp/yt-dlp.git
+[submodule "upstream/whisperx"]
+	path = upstream/whisperx
+	url = https://github.com/m-bain/whisperX.git
+[submodule "upstream/pyscenedetect"]
+	path = upstream/pyscenedetect
+	url = https://github.com/Breakthrough/PySceneDetect.git
+[submodule "upstream/auto-editor"]
+	path = upstream/auto-editor
+	url = https://github.com/WyattBlue/auto-editor.git
+[submodule "upstream/remotion"]
+	path = upstream/remotion
+	url = https://github.com/remotion-dev/remotion.git
+[submodule "upstream/ffmpeg"]
+	path = upstream/ffmpeg
+	url = https://github.com/FFmpeg/FFmpeg.git
+[submodule "upstream/twitchapi"]
+	path = upstream/twitchapi
+	url = https://github.com/Teekeks/pyTwitchAPI.git
+[submodule "upstream/medusa-clip"]
+	path = upstream/medusa-clip
+	url = https://github.com/Edualnog/medusa-clip.git
+[submodule "upstream/clippyme"]
+	path = upstream/clippyme
+	url = https://github.com/fralapo/clippyme.git

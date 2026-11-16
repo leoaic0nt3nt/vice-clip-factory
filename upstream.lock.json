@@ -1,0 +1,87 @@
+{
+  "checked_at": "2026-11-16",
+  "format": 1,
+  "repositories": [
+    {
+      "name": "yt-dlp",
+      "path": "upstream/yt-dlp",
+      "url": "https://github.com/yt-dlp/yt-dlp.git",
+      "commit": "fcfd814ffac6e3c1976ff7c6065386dcfea9f515",
+      "role": "download",
+      "license": "Unlicense",
+      "integration": "integrated CLI"
+    },
+    {
+      "name": "whisperx",
+      "path": "upstream/whisperx",
+      "url": "https://github.com/m-bain/whisperX.git",
+      "commit": "b904f02b7e1f26fd10fb04840d655ff27e88e464",
+      "role": "word-level ASR",
+      "license": "BSD-2-Clause",
+      "integration": "optional executable adapter"
+    },
+    {
+      "name": "pyscenedetect",
+      "path": "upstream/pyscenedetect",
+      "url": "https://github.com/Breakthrough/PySceneDetect.git",
+      "commit": "78992833b28266e35eb56343d701ad24d9b505de",
+      "role": "scene boundaries",
+      "license": "BSD-3-Clause",
+      "integration": "optional executable adapter"
+    },
+    {
+      "name": "auto-editor",
+      "path": "upstream/auto-editor",
+      "url": "https://github.com/WyattBlue/auto-editor.git",
+      "commit": "0f808d8610bcfa08dbae9eca97360b60d9d779f4",
+      "role": "audio + motion first pass",
+      "license": "Unlicense",
+      "integration": "optional executable adapter; Nim source"
+    },
+    {
+      "name": "remotion",
+      "path": "upstream/remotion",
+      "url": "https://github.com/remotion-dev/remotion.git",
+      "commit": "b0c3781e6acc736aeaf2102511068094032ea061",
+      "role": "React graphics renderer",
+      "license": "Remotion License",
+      "integration": "source catalog; not the MVP renderer"
+    },
+    {
+      "name": "ffmpeg",
+      "path": "upstream/ffmpeg",
+      "url": "https://github.com/FFmpeg/FFmpeg.git",
+      "commit": "cc36bf4f5bb67652ce97ed834ae4eeb32a2a0de4",
+      "role": "decode, compose, encode",
+      "license": "LGPL/GPL depending on build",
+      "integration": "installed system executable; source included"
+    },
+    {
+      "name": "twitchapi",
+      "path": "upstream/twitchapi",
+      "url": "https://github.com/Teekeks/pyTwitchAPI.git",
+      "commit": "2dd3e290c056edb6ae2c127aa608de8493b4789e",
+      "role": "Twitch discovery/EventSub SDK",
+      "license": "MIT",
+      "integration": "source catalog; core discovery uses direct Helix HTTP"
+    },
+    {
+      "name": "medusa-clip",
+      "path": "upstream/medusa-clip",
+      "url": "https://github.com/Edualnog/medusa-clip.git",
+      "commit": "6f3cd45b4ccbb2efe66fdb8d9ea952e66db8fb8d",
+      "role": "gameplay highlight engine",
+      "license": "AGPL-3.0",
+      "integration": "optional local Python bridge; not runtime-tested here"
+    },
+    {
+      "name": "clippyme",
+      "path": "upstream/clippyme",
+      "url": "https://github.com/fralapo/clippyme.git",
+      "commit": "00b2f3a9d2b0cca8a77e7a51bc002f026d46d7ce",
+      "role": "watcher/editor/scheduler alternative",
+      "license": "MIT",
+      "integration": "optional standalone app; Zernio publishing outside core"
+    }
+  ]
+}

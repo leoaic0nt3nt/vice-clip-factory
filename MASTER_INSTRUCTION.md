@@ -19,7 +19,7 @@
 ## 2. Найти и зарегистрировать источники
 
 1. Проверить статус релиза по официальному Rockstar, если работа касается до-релизного материала. Не использовать утечки.
-2. `viceclip discover --config config.local.json --output output/discovered.json --lookback-hours 24` ищет метаданные согласованных YouTube/Twitch авторов. Получить корректные channel/broadcaster/category IDs из API, не угадывать.
+2. `python scripts/scout_sources.py --output output/source-candidates.json` ищет новых YouTube/Twitch авторов по теме и категории, оставляя их в needs_rights. `viceclip discover --config config.local.json --output output/discovered.json --lookback-hours 24` отслеживает метаданные уже согласованных авторов. Получить корректные channel/broadcaster/category IDs из API, не угадывать.
 3. Сравнить результаты по новизне, длительности, языку, наличию реакции/звука, пригодности формата, доступности разрешённого оригинала. Количество просмотров чужого видео не предсказывает просмотры новой нарезки.
 4. Не добавлять незнакомого автора в approved sources автоматически. Для channel-wide разрешения проверить scope и доказательство; otherwise needs_rights.
 5. Предпочитать собственный OBS или переданный партнёром файл. Discovery API не является разрешением на скачивание. Для разрешённого URL использовать download adapter, не обходить login, paywall, DRM или rate limits.

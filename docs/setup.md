@@ -63,8 +63,14 @@ viceclip autocut examples/demo-source.mp4 --output output/first-pass.mp4
 В `creators` включите только согласованных авторов, задайте YouTube channel ID или Twitch broadcaster ID. API key YouTube и Twitch client ID/token передаются через env с именами из конфигурации. Команда получает метаданные, а не подтверждает права:
 
 ```bash
+# Сначала найти новых авторов по теме/категории:
+python scripts/scout_sources.py --query 'GTA VI gameplay stream' --twitch-game 'Grand Theft Auto VI' --output output/source-candidates.json
+
+# Затем отслеживать авторов, уже внесённых в согласованный список:
 viceclip discover --config config.local.json --lookback-hours 24 --output output/discovered.json
 ```
+
+Scout использует `YOUTUBE_API_KEY`, `TWITCH_CLIENT_ID` и `TWITCH_ACCESS_TOKEN`. Он не изменяет конфигурацию и всегда оставляет кандидата в `needs_rights` с запретом download/edit/publish. ID категории Twitch получает по названию, а не зашивает в код. Это ограниченный поиск по текущему запросу/категории, не исчерпывающий каталог платформы.
 
 `--merge-config` переносит в sources только результаты с явно выданным channel-wide grant. Новые неизвестные авторы не получают разрешение автоматически. YouTube Data API не даёт права скачивать медиа; основной рабочий маршрут - исходник от партнёра в локальном inbox/хранилище. Универсальная загрузка чужих Twitch VOD через Helix тоже не обещается. Подробнее: [исследование платформ](platform-research.md).
 

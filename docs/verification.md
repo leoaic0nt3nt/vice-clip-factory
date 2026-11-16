@@ -6,7 +6,9 @@
 |---|---|
 | Clone девяти upstream источников | Все присутствуют; HEAD каждого совпадает с upstream.lock.json |
 | Установка core из исходников | `bootstrap --profile core --skip-submodules` успешно создал .venv и установил glue, pinned yt-dlp и Pillow |
-| Unit / mocked API | 27 тестов пройдено, включая timing cuts, права, wrong-channel, dedup, ambiguous uploads, лимиты и disclosure |
+| Unit / mocked API | 29 тестов пройдено, включая timing cuts, права, wrong-channel, dedup, ambiguous uploads, лимиты и disclosure |
+| Scout новых авторов | Mock-тесты: без ключей сеть не вызывается; найденные авторы всегда needs_rights без разрешения на скачивание |
+| GitHub Actions | Core checks успешно выполнены на Linux: установка, unit tests и compileall; ссылка в Actions репозитория |
 | Компиляция Python | compileall src/scripts без ошибок |
 | Сквозной CLI run | Собственная синтетика 45s -> plan/ASS/sidecar -> вертикальный MP4 |
 | Результат demo | 20.00s, 1080×1920, 30fps, H.264/yuv420p, AAC48kHz, MP4 faststart, около 3.6MiB |

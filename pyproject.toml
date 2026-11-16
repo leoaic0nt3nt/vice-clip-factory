@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vice-clip-factory"
-version = "0.1.0"
+version = "0.1.1"
 description = "Rights-aware local gameplay highlights and multi-account publishing queue"
 requires-python = ">=3.10"
 license = {text = "MIT"}

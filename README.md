@@ -28,6 +28,8 @@ viceclip run --input examples/demo-source.mp4 --source-id demo --config examples
 
 Python 3.12 рекомендуется, FFmpeg устанавливается отдельно. Результат — вертикальный MP4, ASS, план и JSON с исходными интервалами. Новые запуски пишите в новые папки. Демо синтетическое: это проверка обработки, **не кадры GTA VI**. Обычный GitHub Download ZIP не содержит submodules; используйте clone выше. Для экономии места можно начать с glue и `upstream/yt-dlp`: подробности в [setup](docs/setup.md).
 
+[Посмотреть готовый 20-секундный технический MP4](output/demo/clip-demo.mp4) · [Кадр результата](assets/render-preview.png) · [Скачать релиз](https://github.com/leoaic0nt3nt/vice-clip-factory/releases/latest)
+
 ## Из чего собрана фабрика
 
 | Этап | Готовый проект в мегарепозитории | Как используется |
@@ -48,7 +50,7 @@ Python 3.12 рекомендуется, FFmpeg устанавливается о
 
 <img src="assets/architecture.png" alt="Источник, анализ, отбор, монтаж, приёмка и очередь публикаций" width="100%">
 
-1. Discovery находит метаданные согласованных авторов; права и способ получения оригинала проверяются отдельно.
+1. Scout ищет новых авторов по YouTube-запросу и Twitch-категории. Discovery отслеживает согласованных авторов; права и способ получения оригинала проверяются отдельно.
 2. ASR, звук, движение и границы сцен помогают собрать кандидатов.
 3. Baseline ранжирует прозрачно; Medusa добавляет готовый gameplay engine и опциональную модель.
 4. FFmpeg собирает 1080×1920 с хуком, субтитрами, брендом и верхним/нижним слотом интеграции.
@@ -79,6 +81,9 @@ Bridge по умолчанию работает без внешнего LLM и c
 В конфиге каждый канал получает отдельные credentials, ожидаемый remote ID, лимиты и расписание. YouTube поддерживает refresh token из приватного файла. Instagram требует professional account и публичный HTTPS URL конкретного MP4; подключение object storage остаётся вашим delivery adapter. Sponsored Instagram в базовом publisher заблокирован до реализации проверенного partnership flow.
 
 ```bash
+# Найти новых авторов по теме (только кандидаты, без выдачи прав):
+python scripts/scout_sources.py --output output/source-candidates.json
+
 # Поиск метаданных разрешённых авторов:
 viceclip discover --config config.local.json --output output/discovered.json
 
@@ -100,7 +105,7 @@ viceclip queue run --config config.local.json --db data/publish.sqlite3
 | Субтитры и консервативная обработка пауз | Реализовано, ASS + растровый fallback для FFmpeg без libass |
 | Мультиаккаунтная очередь, dedup, approval, timezone | Реализовано; API проверяется mock-тестами |
 | YouTube / Instagram upload adapters | Реальный код официальных API, live OAuth/upload не проверены |
-| Discovery YouTube / Twitch | Реальный код API; нужны credentials и разрешённые источники |
+| Scout новых авторов + discovery согласованных | Реальный код YouTube/Twitch API; нужны credentials, новые кандидаты всегда needs_rights |
 | WhisperX / PySceneDetect / Auto-Editor | Опциональные CLI adapters, зависят от установки upstream |
 | Medusa local bridge | Source-reviewed; ML runtime не запускался |
 | Непрерывный локальный inbox | Worker включён; автоочередь YouTube, Instagram delivery отдельно |

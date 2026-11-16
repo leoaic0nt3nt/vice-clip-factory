@@ -30,6 +30,7 @@ flowchart LR
 - `publishers.py`: HTTP API, credentials, предварительные проверки и сохранение remote progress.
 - `scripts/run_medusa.py`: узкий мост к готовому игровому движку, отдельная среда и явный cloud opt-in.
 - `scripts/watch_inbox.py`: постоянный локальный процесс для поступающих файлов, журнал по SHA и очередь YouTube.
+- `scripts/scout_sources.py`: поиск новых кандидатов-авторов по YouTube query/Twitch category; без автоматического наследования прав.
 
 Части не объявляются автоматически интегрированными лишь потому, что source клонирован. Remotion, TwitchAPI SDK и ClippyMe включены как готовые самостоятельные основы; текущие CLI discovery/publishing используют тонкие прямые адаптеры официальных API. Нет зависимости от внешнего платного posting gateway.
 

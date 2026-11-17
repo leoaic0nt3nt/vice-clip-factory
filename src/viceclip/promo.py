@@ -8,7 +8,7 @@ from .rights import load_config
 MAX_TEXT = 80
 
 
-def validate(text, url, position="bottom"):
+def validate(text, url, position="top"):
     if not isinstance(text, str) or any(ord(char) < 32 for char in text):
         raise ValueError("Текст плашки должен быть одной строкой")
     text = " ".join(text.split())
@@ -63,7 +63,7 @@ def receipt(config):
             "instagram": "Instagram получает обычную версию без рекламной плашки и рекламной подписи."}
 
 
-def configure(config_path, *, text, url, position="bottom"):
+def configure(config_path, *, text, url, position="top"):
     config = load_config(config_path)
     config["campaign"] = validate(text, url, position)
     private_json(config_path, config)

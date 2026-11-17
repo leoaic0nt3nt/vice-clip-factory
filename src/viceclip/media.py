@@ -84,7 +84,9 @@ def has_filter(name):
 
 
 def doctor():
-    data = {name: shutil.which(name) for name in ("ffmpeg", "ffprobe", "yt-dlp", "whisperx", "scenedetect", "auto-editor")}
+    data = {name: shutil.which(name) for name in ("ffmpeg", "ffprobe", "yt-dlp", "whisperx", "scenedetect", "auto-editor", "codex")}
+    from .editorial import DEFAULT_MODEL
+    data["editorial_model"] = DEFAULT_MODEL
     data["ffmpeg_filters"] = {name: has_filter(name) if data["ffmpeg"] else False for name in ("ass", "drawtext", "overlay")}
     try:
         import PIL

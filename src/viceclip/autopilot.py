@@ -28,6 +28,7 @@ from .media import fingerprint, probe
 from .queue import Queue
 from .rights import load_config
 from . import promo
+from .editorial import EditorialUnavailable
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -477,7 +478,8 @@ class Autopilot:
                     transcript = integrations.transcribe(input_path, work / "asr", asr.get("device", "cpu"), asr.get("language"))
             plan = plan_media(input_path, runtime, source["id"], transcript,
                               int(self.settings.get("clips_per_source", 3)),
-                              float(self.settings.get("min_clip_seconds", 15)), float(self.settings.get("max_clip_seconds", 55)))
+                              float(self.settings.get("min_clip_seconds", 15)), float(self.settings.get("max_clip_seconds", 55)),
+                              editorial_cache_dir=work / "editorial")
             # Freeze the appearance at planning time. Updating promo never rewrites
             # an interrupted run or previously queued media under its old hash.
             plan["_render_style"] = promo.base_style(runtime)
@@ -519,6 +521,8 @@ class Autopilot:
                     render(input_path, {**plan, "clips": [candidate]}, promo_dir, promo.youtube_style(render_style, campaign))
                 clip["variants"] = {"youtube": {"file": str(variant), "sha256": fingerprint(variant),
                     "sponsored": True, "caption": promo.campaign_caption(campaign)}}
+                from .revenue import clip_campaign
+                clip["variants"]["youtube"]["campaign"] = clip_campaign(campaign,clip["sha256"])
             clips.append(clip)
         result = {"engine": "baseline", "input_sha256": fingerprint(input_path), "clips": clips}
         _save(result_file, result)
@@ -587,6 +591,8 @@ class Autopilot:
                             "sponsored": selected.get("sponsored", clip.get("sponsored", runtime.get("style", {}).get("sponsored", False)))}
                 if selected.get("public_url"):
                     metadata["public_url"] = selected["public_url"]
+                if selected.get("campaign"):
+                    metadata["campaign"] = selected["campaign"]
                 job = queue.add(selected["file"], source["id"], account["id"], metadata, runtime, self._schedule(queue, account["id"]))
                 if self.settings.get("auto_approve", True) is True and job["status"] == "pending":
                     queue.approve(job["id"])
@@ -694,6 +700,10 @@ class Autopilot:
                             result = json.loads(result_file.read_text())
                             digest = raw["input_sha"]
                         else:
+                            if (self.settings.get("editorial", {}).get("provider") == "codex"
+                                    and not (work / "plan.json").exists()):
+                                from .editorial import check_editorial_ready
+                                check_editorial_ready()
                             path = Path(raw["input_path"]) if raw["input_path"] and Path(raw["input_path"]).is_file() else self._input(source, work, runtime)
                             managed_input = str(path)
                             digest = fingerprint(path)
@@ -718,6 +728,11 @@ class Autopilot:
                         retry = self.clock() + max(60, int(self.settings.get("poll_interval_seconds", 300)))
                         self._set(raw["key"], stage="waiting", retry_at=retry, error=None)
                         report["discovery"].append({"source": source["id"], "state": "waiting", "reason": _error(exc)})
+                    except EditorialUnavailable as exc:
+                        retry = self.clock() + max(60, int(self.settings.get("poll_interval_seconds", 300)))
+                        self._set(raw["key"], stage="waiting", retry_at=retry, error=_error(exc))
+                        report["discovery"].append({"source": source["id"], "state": "waiting",
+                            "stage": "editorial", "reason": _error(exc)})
                     except Exception as exc:
                         failures = raw["failures"] + 1
                         retry = self.clock() + min(3600, int(self.settings.get("retry_backoff_seconds", 30)) * 2 ** (failures - 1))

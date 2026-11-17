@@ -20,6 +20,18 @@ def iou(a, b):
     return intersection / max(.001, (a[1]-a[0]) + (b[1]-b[0]) - intersection)
 
 
+def _short_hook(text, limit=70):
+    text = " ".join(text.split())
+    if len(text) <= limit:
+        return text
+    words = []
+    for word in text.split():
+        if len(" ".join(words + [word])) + 1 > limit:
+            break
+        words.append(word)
+    return " ".join(words).rstrip(",;:") + "…" if words else "Игровой момент"
+
+
 def select_candidates(analysis, transcript, *, top=3, min_duration=12, max_duration=38):
     duration = analysis["duration"]
     if not (0 < min_duration <= max_duration) or top < 1:
@@ -62,7 +74,7 @@ def select_candidates(analysis, transcript, *, top=3, min_duration=12, max_durat
             mode = "audio_motion"  # No unavailable speech component can make action clips impossible to qualify.
         title = next((s["text"].strip() for s in segments if any(k in s["text"].lower() for k in EVENTS)), "Игровой момент")
         candidates.append({"start": round(start, 3), "end": round(end, 3), "score": score,
-                           "hook": title[:95], "evidence": {"event_keywords": hits, "audio_energy": round(audio_score, 3),
+                           "hook": _short_hook(title), "evidence": {"event_keywords": hits, "audio_energy": round(audio_score, 3),
                            "motion": round(motion_score, 3), "setup": setup, "payoff": payoff, "mode": mode},
                            "review_required": True})
     chosen = []
@@ -102,12 +114,64 @@ def kept_ranges(start, end, analysis, transcript, trim_silence=False):
     return result
 
 
+def _caption_text(words):
+    text = " ".join(word["word"].strip() for word in words)
+    # Whisper may separate punctuation and suffixes such as Russian "-то".
+    return re.sub(r"\s+([,.;:!?…]|-\w)", r"\1", text)
+
+
+def timed_words(segment):
+    """Use word-level timing only when every word in the segment is aligned."""
+    words = segment.get("words")
+    if not isinstance(words, (list, tuple)):
+        return ()
+    for entry in words:
+        if not isinstance(entry, dict):
+            return ()
+        start, end, word = entry.get("start"), entry.get("end"), entry.get("word")
+        if (type(start) not in (int, float) or type(end) not in (int, float)
+                or not 0 <= start < end < math.inf or not isinstance(word, str) or not word.strip()):
+            return ()
+    return words
+
+
+def _word_cues(words):
+    cue = []
+    for word in words:
+        if cue and (len(cue) >= 6 or len(_caption_text(cue + [word])) > 48
+                    or word["start"] - cue[-1]["end"] > .5
+                    or cue[-1]["word"].rstrip().endswith((".", "!", "?", "…"))):
+            yield {"start": cue[0]["start"], "end": cue[-1]["end"],
+                   "text": _caption_text(cue), "words": cue}
+            cue = []
+        cue.append(word)
+    if cue:
+        yield {"start": cue[0]["start"], "end": cue[-1]["end"],
+               "text": _caption_text(cue), "words": cue}
+
+
 def remap_captions(transcript, ranges):
+    """Remap kept speech; timed words require strict positive overlap, no edge padding.
+
+    A word crossing a cut is clamped to the kept interval. Words merely touching
+    an edge are excluded. Segments without complete word alignment retain their text.
+    """
     output, offset = [], 0.0
+    aligned = [(segment, timed_words(segment)) for segment in transcript]
     for a, b in ranges:
-        for s in transcript:
+        for s, entries in aligned:
             left, right = max(a, s["start"]), min(b, s["end"])
             if right > left:
-                output.append({"start": round(offset+left-a, 3), "end": round(offset+right-a, 3), "text": s["text"]})
+                if entries:
+                    words = []
+                    for word in entries:
+                        start, end = max(a, word["start"]), min(b, word["end"])
+                        if end > start:
+                            start, end = round(offset+start-a, 3), round(offset+end-a, 3)
+                            if end > start:
+                                words.append({**word, "start": start, "end": end})
+                    output.extend(_word_cues(words))
+                else:
+                    output.append({"start": round(offset+left-a, 3), "end": round(offset+right-a, 3), "text": s["text"]})
         offset += b-a
     return output

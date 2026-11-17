@@ -82,6 +82,53 @@ class EditorialTests(unittest.TestCase):
         result = remap_captions([{"start": 1, "end": 3, "text": "one"}, {"start": 7, "end": 9, "text": "two"}], [(0,4),(6,10)])
         self.assertEqual(result, [{"start":1,"end":3,"text":"one"},{"start":5,"end":7,"text":"two"}])
 
+    def test_word_captions_exclude_speech_outside_clip_and_clamp_crossing_words(self):
+        transcript = [{"start": 0, "end": 10, "text": "before crossing kept after", "words": [
+            {"start": 0, "end": 2, "word": " before"},
+            {"start": 2, "end": 3, "word": " crossing"},
+            {"start": 3, "end": 4, "word": " kept"},
+            {"start": 4, "end": 5, "word": " after"},
+        ]}]
+        result = remap_captions(transcript, [(2.5, 4)])
+        self.assertEqual(result, [{"start": 0, "end": 1.5, "text": "crossing kept", "words": [
+            {"start": 0, "end": .5, "word": " crossing"},
+            {"start": .5, "end": 1.5, "word": " kept"},
+        ]}])
+        # Words ending at the start or starting at the end do not overlap.
+        self.assertEqual(remap_captions(transcript, [(5, 6)]), [])
+
+    def test_word_captions_remap_both_sides_of_removed_gap(self):
+        transcript = [{"start": 0, "end": 9, "text": "one removed two", "words": [
+            {"start": 1, "end": 2, "word": "one"},
+            {"start": 4, "end": 5, "word": "removed"},
+            {"start": 7, "end": 8, "word": "two"},
+        ]}]
+        result = remap_captions(transcript, [(0, 3), (6, 9)])
+        self.assertEqual([(c["start"], c["end"], c["text"]) for c in result],
+                         [(1, 2, "one"), (4, 5, "two")])
+        self.assertEqual(result[1]["words"], [{"start": 4, "end": 5, "word": "two"}])
+
+    def test_word_captions_split_long_speech_and_meaningful_pauses(self):
+        words = [{"start": i*.3, "end": i*.3+.2, "word": " слово"} for i in range(7)]
+        words += [{"start": 3, "end": 3.2, "word": " дальше"}]
+        result = remap_captions([{"start": 0, "end": 4, "text": "ignored", "words": words}], [(0, 4)])
+        self.assertEqual([len(c["words"]) for c in result], [6, 1, 1])
+        self.assertTrue(all(len(c["text"]) <= 48 for c in result))
+        self.assertEqual(result[-1]["start"], 3)
+        long_words = [{"start": i, "end": i+.5, "word": " четырнадцать"} for i in range(4)]
+        result = remap_captions([{"start": 0, "end": 4, "text": "ignored", "words": long_words}], [(0, 4)])
+        self.assertEqual([len(c["words"]) for c in result], [3, 1])
+
+    def test_hook_keeps_whole_words_within_seventy_characters(self):
+        text = "Смотри сейчас машина провалилась с моста и уехала прямо в метро через огромную дыру"
+        clip = select_candidates({"duration": 40, "audio_dbfs": [], "motion": []},
+                                 [{"start": 0, "end": 10, "text": text}], top=1)[0]
+        self.assertLessEqual(len(clip["hook"]), 70)
+        self.assertTrue(clip["hook"].endswith("…"))
+        self.assertTrue(text.startswith(clip["hook"][:-1] + " "))
+        fallback = select_candidates({"duration": 40, "audio_dbfs": [], "motion": []}, [], top=1)[0]
+        self.assertEqual(fallback["hook"], "Игровой момент")
+
     def test_short_clip_boundaries(self):
         clips = select_candidates({"duration": 4, "audio_dbfs": [], "motion": []}, [], top=1)
         self.assertEqual((clips[0]["start"], clips[0]["end"]), (0,4))

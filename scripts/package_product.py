@@ -44,8 +44,10 @@ def main():
             archive.writestr(prefix+str(rel),data)
         archive.writestr(prefix+'README_FIRST.txt',
             'VICE CLIP FACTORY\n\n1. Open Terminal in this folder and run: bash install.sh\n'
-            '2. Activate the environment as printed, then: viceclip setup\n'
-            '3. Configure promotion if needed: viceclip promo\n'
+            '2. Activate the environment as printed, then: codex login\n'
+            '   Your Codex account needs GPT-6.2 Sol access. Sampled frames and transcript are sent to Codex.\n'
+            '   Run: viceclip setup\n'
+            '3. Configure promotion: viceclip promo; get profile URL: viceclip revenue link\n'
             '4. Preview: viceclip autopilot tick --preview\n'
             '5. Publish: viceclip autopilot start --persistent --execute\n\n'
             'Russian guide: output/pdf/GTA-VI-Clip-Factory-Guide-by-Leo.pdf\n'

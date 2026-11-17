@@ -37,13 +37,16 @@ def base_config(config_path):
         "sources":[{"id":"inbox","creator":"Мои выбранные записи","enabled":True,
                     "platforms":["youtube","instagram"]}],"creators":[],"accounts":[],
         "style":{"brand":"@your_channel","trim_silence":True,"sponsor_text":"",
-                 "sponsored":False,"sponsor_position":"bottom","preset":"veryfast"},
+                 "sponsored":False,"sponsor_position":"top","preset":"veryfast",
+                 "layout":"portrait","ad_format":"compact"},
         "autopilot":{"enabled":True,"execute":False,"poll_interval_seconds":300,
              "privacy":"public","state_path":str(home/"state.sqlite3"),"publish_db":str(home/"publish.sqlite3"),
              "output_dir":str(home/"output"),"inboxes":[{"path":str(inbox),"source_id":"inbox"}],
              "source_ids":[],"accounts":[],"auto_approve":True,"min_score":45,
-             "clips_per_source":3,"posting_gap_seconds":14400,"max_source_seconds":14400,
-             "asr":{"enabled":True,"provider":"faster-whisper","model":"base","device":"cpu","language":None}}}
+             "clips_per_source":2,"min_clip_seconds":20,"max_clip_seconds":40,
+             "posting_gap_seconds":14400,"max_source_seconds":14400,
+             "editorial":{"provider":"codex","model":"gpt-6.2-sol","timeout_seconds":180},
+             "asr":{"enabled":True,"provider":"faster-whisper","model":"small","device":"cpu","language":None}}}
 
 
 def add_source(config, url):
@@ -89,6 +92,7 @@ def setup(config_path=None, *, non_interactive=False, sources=None, inbox=None, 
     config = base_config(path)
     secret_values = {}
     print("\nVICE CLIP FACTORY · Первый запуск\n")
+    print("Редактор GPT-6.2 Sol использует вход через codex login. Кадры и расшифровка передаются в Codex для отбора сцен.")
     if non_interactive:
         if not accept_terms:
             raise ValueError("Для настройки через код укажите --accept-terms: оператор отвечает за выбранные источники и правила площадок.")
@@ -154,7 +158,10 @@ def setup(config_path=None, *, non_interactive=False, sources=None, inbox=None, 
             config["storage"]={"provider":"s3","bucket":bucket,"endpoint_url":endpoint or None,
                   "region":region,"prefix":"viceclip","presign_seconds":86400,
                   "access_key_env":"S3_ACCESS_KEY_ID","secret_key_env":"S3_SECRET_ACCESS_KEY"}
-        config["autopilot"]["clips_per_source"]=int(ask("Сколько клипов готовить из одной записи","3"))
+        clips = int(ask("Сколько клипов готовить из одной записи (1–2)","2"))
+        if not 1 <= clips <= 2:
+            raise ValueError("Смысловой редактор готовит 1–2 лучших клипа за проход")
+        config["autopilot"]["clips_per_source"] = clips
         posts=int(ask("Максимум публикаций в день на канал","3"))
         for account in config["accounts"]:account["max_posts_per_day"]=max(1,posts)
         config["autopilot"]["posting_gap_seconds"]=max(60,86400//max(1,posts))

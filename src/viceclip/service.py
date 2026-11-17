@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import platform
 import signal
+import shutil
 import subprocess
 import sys
 import time
@@ -21,6 +22,18 @@ def command_for(config_path, execute=None):
     if execute is True:command.append("--execute")
     elif execute is False:command.append("--preview")
     return command
+
+
+def runtime_path():
+    """Keep the Node/Codex installation usable outside an interactive shell."""
+    directories=[str(Path(sys.executable).parent)]
+    for binary in ("node","codex"):
+        located=shutil.which(binary)
+        if located:
+            directories.append(str(Path(located).parent))
+    directories.extend(os.environ.get("PATH","").split(os.pathsep))
+    directories.extend(("/opt/homebrew/bin","/usr/local/bin","/usr/bin","/bin"))
+    return os.pathsep.join(dict.fromkeys(item for item in directories if item))
 
 
 def _label(config_path):
@@ -66,7 +79,7 @@ def start(config_path, *, execute=None, persistent=False):
         definition={"Label":_label(config),"ProgramArguments":command,"WorkingDirectory":str(config.parent),
             "RunAtLoad":True,"KeepAlive":True,"ThrottleInterval":30,
             "StandardOutPath":str(log),"StandardErrorPath":str(log),
-            "EnvironmentVariables":{"PATH":str(Path(sys.executable).parent)+":/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"}}
+            "EnvironmentVariables":{"PATH":runtime_path()}}
         plist.write_bytes(plistlib.dumps(definition))
         subprocess.run(["launchctl","bootout",f"gui/{os.getuid()}",str(plist)],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
         subprocess.run(["launchctl","bootstrap",f"gui/{os.getuid()}",str(plist)],check=True)
@@ -79,7 +92,7 @@ def start(config_path, *, execute=None, persistent=False):
         exec_line=" ".join(json.dumps(str(x)) for x in command)
         definition="[Unit]\nDescription=Vice Clip Factory autopilot\nAfter=network-online.target\n\n[Service]\nType=simple\n"
         definition+="ExecStart="+exec_line+"\nWorkingDirectory="+str(config.parent)+"\nRestart=on-failure\nRestartSec=30\n"
-        definition+="Environment=PATH="+str(Path(sys.executable).parent)+":/usr/local/bin:/usr/bin:/bin\n\n[Install]\nWantedBy=default.target\n"
+        definition+="Environment="+json.dumps("PATH="+runtime_path())+"\n\n[Install]\nWantedBy=default.target\n"
         unit.write_text(definition)
         subprocess.run(["systemctl","--user","daemon-reload"],check=True)
         subprocess.run(["systemctl","--user","enable","--now",unit_name],check=True)

@@ -5,7 +5,7 @@ profile="autopilot"
 system_deps=1
 preload_model=0
 in_place=0
-release="0.3.0"
+release="0.4.0"
 while (($#)); do
   case "$1" in
     --profile) profile="${2:?Specify core or autopilot}"; shift 2 ;;
@@ -79,13 +79,33 @@ fi
 package="$source_dir"
 [[ "$profile" == "autopilot" ]] && package="$source_dir[autopilot]"
 "$source_dir/.venv/bin/python" -m pip install --disable-pip-version-check -e "$package"
+if [[ "$profile" == "autopilot" ]]; then
+  codex_binary="$(command -v codex || true)"
+  if [[ -z "$codex_binary" && -x /Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex ]]; then
+    codex_binary="/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex"
+  fi
+  if [[ -n "$codex_binary" ]]; then
+    codex_version="$("$codex_binary" --version 2>/dev/null || true)"
+    if ! "$source_dir/.venv/bin/python" -c 'import re,sys;v=re.search(r"(\d+)\.(\d+)\.(\d+)",sys.argv[1]);sys.exit(0 if v and tuple(map(int,v.groups())) >= (0,169,0) else 1)' "$codex_version"; then
+      codex_binary=""
+    fi
+  fi
+  if [[ -z "$codex_binary" ]]; then
+    command -v npm >/dev/null || { echo "Install Node.js from https://nodejs.org, then run this installer again."; exit 1; }
+    npm install --prefix "$source_dir/.tools/codex" --no-audit --no-fund @openai/codex@0.169.0
+    codex_binary="$source_dir/.tools/codex/node_modules/.bin/codex"
+  fi
+  codex_binary="$("$source_dir/.venv/bin/python" -c 'from pathlib import Path;import sys;print(Path(sys.argv[1]).resolve())' "$codex_binary")"
+  [[ "$codex_binary" == "$source_dir/.venv/bin/codex" ]] || ln -sfn "$codex_binary" "$source_dir/.venv/bin/codex"
+fi
 if ((preload_model)) && [[ "$profile" == "autopilot" ]]; then
-  "$source_dir/.venv/bin/python" -c 'from faster_whisper import WhisperModel; WhisperModel("base",device="cpu",compute_type="int8"); print("Speech model ready")'
+  "$source_dir/.venv/bin/python" -c 'from faster_whisper import WhisperModel; WhisperModel("small",device="cpu",compute_type="int8"); print("Speech model ready")'
 fi
 "$source_dir/.venv/bin/viceclip" doctor >/dev/null
 echo
 echo "Installed. Next:"
 "$source_dir/.venv/bin/python" -c 'import shlex,sys;print("source "+shlex.quote(sys.argv[1]))' "$source_dir/.venv/bin/activate"
+[[ "$profile" != "autopilot" ]] || echo "codex login    # once, using your Codex account"
 echo "viceclip setup"
 echo "viceclip autopilot start --persistent"
 echo "viceclip autopilot status"

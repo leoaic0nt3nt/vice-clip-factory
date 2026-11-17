@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import sys
 import subprocess
+import sqlite3
 from . import __version__
 from . import integrations
 from .media import analyze, doctor, read_transcript
@@ -19,12 +20,26 @@ def save(path, value):
     target.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
-def plan_media(input_path, config, source_id, transcript_path, top, min_duration, max_duration):
+def plan_media(input_path, config, source_id, transcript_path, top, min_duration, max_duration, *, editorial_cache_dir=None):
     check_rights(config, source_id, "edit")
     analysis = analyze(input_path)
     transcript = read_transcript(transcript_path, analysis["duration"])
+    editorial = config.get("autopilot", {}).get("editorial", {})
+    provider = editorial.get("provider", "baseline")
+    if provider == "codex":
+        from .editorial import select_editorial_candidates, DEFAULT_MODEL
+        cache = editorial_cache_dir or Path(config.get("autopilot", {}).get("output_dir", "output")) / "editorial-cache"
+        clips = select_editorial_candidates(input_path, analysis, transcript, cache_dir=cache,
+            model=editorial.get("model", DEFAULT_MODEL), top=top, min_duration=min_duration,
+            max_duration=max_duration, timeout=float(editorial.get("timeout_seconds", 180)))
+        return {"version": 2, "source_id": source_id, "analysis": analysis, "transcript": transcript,
+                "clips": clips, "selector": {"provider": provider, "model": editorial.get("model", DEFAULT_MODEL)},
+                "limitations": "AI editorial assessment from transcript and sampled frames; not a prediction of reach or income."}
+    if provider != "baseline":
+        raise ValueError("Editorial provider must be codex or baseline")
     return {"version": 1, "source_id": source_id, "analysis": analysis, "transcript": transcript,
             "clips": select_candidates(analysis, transcript, top=top, min_duration=min_duration, max_duration=max_duration),
+            "selector": {"provider": "baseline"},
             "limitations": "Rule-based ranking, no gameplay semantics, no auto-tracking, no guarantee of virality. Review setup/payoff, rights and originality."}
 
 
@@ -52,6 +67,16 @@ def parser():
     p.add_argument("--config",default=str(default_config_path()))
     p.add_argument("--name",required=True)
     p.add_argument("--client-secrets");p.add_argument("--token-env",default="INSTAGRAM_ACCESS_TOKEN")
+    p = commands.add_parser("revenue",help="Ссылка на оффер, реальные комиссии и отчёт выпуска")
+    actions = p.add_subparsers(dest="action",required=True)
+    for action in ("link","import","report"):
+        q = actions.add_parser(action)
+        q.add_argument("--config",default=str(default_config_path()))
+        if action == "link":
+            q.add_argument("--clip-id")
+            q.add_argument("--platform",choices=["youtube","instagram"],default="youtube")
+        if action == "import":
+            q.add_argument("csv")
     p = commands.add_parser("autopilot",help="Постоянная работа, расписание и управление")
     actions=p.add_subparsers(dest="action",required=True)
     for action in ("tick","run","start","stop","status","logs","pause","resume"):
@@ -132,7 +157,7 @@ def main(argv=None):
                     print("Разместите свою ссылку в профиле канала один раз; текст в самом видео не кликабелен.")
                 text=args.text or ask("Текст плашки","ТВОЙ ПРОДУКТ · ССЫЛКА В ПРОФИЛЕ")
                 url=args.url or ask("Ссылка на продукт или ваша реферальная ссылка (HTTPS)")
-                position=args.position or ask("Положение: top - сверху, bottom - снизу","bottom")
+                position=args.position or ask("Положение: top - сверху, bottom - снизу","top")
                 result=promo.configure(args.config,text=text,url=url,position=position)
         elif args.command == "connect":
             import os
@@ -157,6 +182,28 @@ def main(argv=None):
             config.setdefault("autopilot",{}).setdefault("accounts",[]).append(args.name)
             private_json(args.config,config)
             result={"connected":args.name,"platform":args.platform,"remote_id":info["remote_id"]}
+        elif args.command == "revenue":
+            from . import revenue, promo
+            home=Path(args.config).expanduser().resolve().parent
+            settings=config.get("autopilot",{})
+            def profile_path(key, fallback):
+                path=Path(settings.get(key,fallback)).expanduser()
+                return path if path.is_absolute() else home/path
+            ledger=profile_path("revenue_db","revenue.sqlite3")
+            if args.action == "link":
+                campaign=promo.active_campaign(config)
+                if not campaign:
+                    raise ValueError("Сначала настройте оффер: viceclip promo")
+                if args.clip_id:
+                    revenue.validate_clip_campaign(campaign,args.clip_id,
+                        queue_path=profile_path("publish_db","data/publish.sqlite3"),
+                        state_path=profile_path("state_path","data/autopilot.sqlite3"))
+                result=revenue.tracking_link(campaign,platform=args.platform,clip_id=args.clip_id)
+            elif args.action == "import":
+                result=revenue.import_conversions(ledger,args.csv)
+            else:
+                result=revenue.report(profile_path("publish_db","data/publish.sqlite3"),
+                    state_path=profile_path("state_path","data/autopilot.sqlite3"),ledger_path=ledger)
         elif args.command == "autopilot":
             from . import service
             if args.action == "status":
@@ -250,7 +297,7 @@ def main(argv=None):
     except KeyboardInterrupt:
         print("Vice Clip Factory остановлен",file=sys.stderr)
         return 130
-    except (ValueError, RuntimeError, OSError, KeyError) as error:
+    except (ValueError, RuntimeError, OSError, KeyError, sqlite3.Error) as error:
         print(f"viceclip: {error}", file=sys.stderr)
         return 1
 

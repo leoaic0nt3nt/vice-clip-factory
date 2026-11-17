@@ -4,14 +4,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vice-clip-factory"
-version = "0.3.0"
+version = "0.4.0"
 description = "Vice Clip Factory: continuous gameplay clips and multi-channel publishing"
 requires-python = ">=3.10"
 license = {text = "MIT"}
 dependencies = ["Pillow>=10"]
 
 [project.optional-dependencies]
-autopilot = ["yt-dlp==2026.10.26", "faster-whisper==1.2.1", "av==17.0.1", "boto3>=1.40,<2", "google-auth-oauthlib>=1.2,<2"]
+autopilot = ["yt-dlp[default,deno]==2026.10.26", "faster-whisper==1.2.1", "av==17.0.1", "boto3>=1.40,<2", "google-auth-oauthlib>=1.2,<2"]
 connect = ["google-auth-oauthlib>=1.2,<2"]
 cloud = ["boto3>=1.40,<2"]
 

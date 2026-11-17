@@ -36,7 +36,7 @@ Style: Ad,Arial,34,&H00100A09,&H000000FF,&H00100A09,&H90000000,-1,0,0,0,100,100,
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
     portrait = style.get("layout") == "portrait"
-    compact = style.get("ad_format") == "compact"
+    compact = style.get("ad_format") in ("compact", "motion")
     if portrait:
         header = header.replace("Caption,Arial,54", "Caption,Inter Tight,76")
         header = header.replace("1,3,1,2,100,100,470,1", "1,7,0,8,115,115,1146,1")
@@ -72,8 +72,8 @@ def _clip_style(style, candidate):
     if mode not in ("legacy", "words", "phrase", "meme"):
         raise ValueError("style.caption_mode must be auto, legacy, words, phrase or meme")
     ad_format = style.get("ad_format", "compact" if layout == "portrait" else "legacy")
-    if ad_format not in ("compact", "legacy"):
-        raise ValueError("style.ad_format must be compact or legacy")
+    if ad_format not in ("compact", "legacy", "motion"):
+        raise ValueError("style.ad_format must be compact, legacy or motion")
     return {**style, "layout": layout, "caption_mode": mode, "ad_format": ad_format}
 
 

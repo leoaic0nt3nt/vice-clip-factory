@@ -109,6 +109,31 @@ class RequestTests(unittest.TestCase):
             self.choose()
             self.assertEqual(request.call_count, 6)
 
+    def test_english_hooks_use_separate_cache_and_preserve_source_speech(self):
+        english_clip = response_clip(
+            hook="Can a Car Still Drive on Three Wheels?",
+            setup="The player tries to pull away after the impact.",
+            payoff="The car moves with a damaged wheel.",
+            why="The car turns sideways immediately after moving.",
+        )
+        with patch.object(editorial, "_contact_sheets", return_value=(["frames.jpg"], [6.0])), \
+                patch.object(editorial, "_codex", side_effect=[
+                    {"clips": [response_clip()]}, {"clips": [english_clip]},
+                ]) as request:
+            russian = self.choose()
+            english = self.choose(output_language="en")
+            self.assertEqual(english[0]["hook"], english_clip["hook"])
+            self.assertEqual(english[0]["output_language"], "en")
+            self.assertEqual(english[0]["evidence"]["setup"], english_clip["setup"])
+            prompt = request.call_args.args[1]
+            self.assertIn("new English", prompt)
+            self.assertIn('[6.15,7.85,"Тестовая реплика."]', prompt)
+            self.assertEqual(self.choose(output_language="en"), english)
+            self.assertEqual(self.choose(), russian)
+            self.assertEqual(request.call_count, 2)
+        with self.assertRaisesRegex(editorial.EditorialError, "на английском"):
+            editorial.validate_response({"clips": [response_clip()]}, output_language="en", **LIMITS)
+
     def test_editorial_failure_propagates_and_is_never_cached(self):
         with patch.object(editorial, "_contact_sheets", return_value=(["frames.jpg"], [6.0])), \
                 patch.object(editorial, "_codex", side_effect=editorial.EditorialError("ошибка")):

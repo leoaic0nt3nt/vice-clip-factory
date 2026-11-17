@@ -29,9 +29,11 @@ def plan_media(input_path, config, source_id, transcript_path, top, min_duration
     if provider == "codex":
         from .editorial import select_editorial_candidates, DEFAULT_MODEL
         cache = editorial_cache_dir or Path(config.get("autopilot", {}).get("output_dir", "output")) / "editorial-cache"
+        language = editorial.get("output_language", "ru")
         clips = select_editorial_candidates(input_path, analysis, transcript, cache_dir=cache,
             model=editorial.get("model", DEFAULT_MODEL), top=top, min_duration=min_duration,
-            max_duration=max_duration, timeout=float(editorial.get("timeout_seconds", 180)))
+            max_duration=max_duration, timeout=float(editorial.get("timeout_seconds", 180)),
+            output_language=language)
         return {"version": 2, "source_id": source_id, "analysis": analysis, "transcript": transcript,
                 "clips": clips, "selector": {"provider": provider, "model": editorial.get("model", DEFAULT_MODEL)},
                 "limitations": "AI editorial assessment from transcript and sampled frames; not a prediction of reach or income."}
@@ -53,20 +55,39 @@ def parser():
     p.add_argument("--config",default=str(default_config_path()))
     p.add_argument("--non-interactive",action="store_true")
     p.add_argument("--source",action="append",default=[])
+    p.add_argument("--language",choices=["en","ru"],help="Язык заголовков и CTA. Субтитры сохраняют язык исходника.")
+    p.add_argument("--youtube-privacy",choices=["private","unlisted","public"])
     p.add_argument("--inbox");p.add_argument("--no-asr",action="store_true")
     p.add_argument("--execute",action="store_true");p.add_argument("--accept-terms",action="store_true")
     p = commands.add_parser("promo",help="Реклама и ссылка для новых YouTube-клипов")
     p.add_argument("--config",default=str(default_config_path()))
     p.add_argument("--text");p.add_argument("--url")
     p.add_argument("--position",choices=["top","bottom"])
+    p.add_argument("--start",type=float,help="Секунда появления, по умолчанию 4")
+    p.add_argument("--seconds",type=float,help="Длительность показа от 1 до 8 секунд")
+    p.add_argument("--cta",help="Короткий призыв к действию")
+    p.add_argument("--language",choices=["en","ru"],help="Язык пометки и CTA")
+    artwork = p.add_mutually_exclusive_group()
+    artwork.add_argument("--artwork",help="Файл PNG, JPEG или WebP, в том числе из ChatGPT Image")
+    artwork.add_argument("--no-artwork",action="store_true")
     promo_action=p.add_mutually_exclusive_group()
     promo_action.add_argument("--show",action="store_true")
     promo_action.add_argument("--off",action="store_true")
+    p = commands.add_parser("market",help="Сменить язык заголовков для новых клипов")
+    p.add_argument("--config",default=str(default_config_path()))
+    p.add_argument("--language",required=True,choices=["en","ru"])
     p = commands.add_parser("connect",help="Подключить ещё один канал")
     p.add_argument("platform",choices=["youtube","instagram"])
     p.add_argument("--config",default=str(default_config_path()))
     p.add_argument("--name",required=True)
     p.add_argument("--client-secrets");p.add_argument("--token-env",default="INSTAGRAM_ACCESS_TOKEN")
+    p = commands.add_parser("youtube",help="Проверка канала и статуса загруженного ролика")
+    youtube_actions=p.add_subparsers(dest="action",required=True)
+    q=youtube_actions.add_parser("check")
+    q.add_argument("--config",default=str(default_config_path()))
+    q.add_argument("--account",required=True)
+    q.add_argument("--video-id")
+    q.add_argument("--privacy",choices=["private","unlisted","public"])
     p = commands.add_parser("revenue",help="Ссылка на оффер, реальные комиссии и отчёт выпуска")
     actions = p.add_subparsers(dest="action",required=True)
     for action in ("link","import","report"):
@@ -143,7 +164,8 @@ def main(argv=None):
         if args.command == "setup":
             from .onboarding import setup
             result=setup(args.config,non_interactive=args.non_interactive,sources=args.source,inbox=args.inbox,
-                         no_asr=args.no_asr,execute=args.execute,accept_terms=args.accept_terms)
+                         no_asr=args.no_asr,execute=args.execute,accept_terms=args.accept_terms,
+                         language=args.language,youtube_privacy=args.youtube_privacy)
         elif args.command == "promo":
             from . import promo
             if args.off:
@@ -152,13 +174,42 @@ def main(argv=None):
                 result=promo.status(args.config)
             else:
                 from .onboarding import ask
-                if not args.text or not args.url or not args.position:
+                previous = promo.active_campaign(config) or {}
+                edit_flags = any(x is not None for x in
+                                 (args.text, args.url, args.position, args.start, args.seconds,
+                                  args.cta, args.language, args.artwork)) or args.no_artwork
+                if not edit_flags:
                     print("Плашка добавляется в новые YouTube-клипы. Instagram получает чистый ролик.")
                     print("Разместите свою ссылку в профиле канала один раз; текст в самом видео не кликабелен.")
-                text=args.text or ask("Текст плашки","ТВОЙ ПРОДУКТ · ССЫЛКА В ПРОФИЛЕ")
-                url=args.url or ask("Ссылка на продукт или ваша реферальная ссылка (HTTPS)")
-                position=args.position or ask("Положение: top - сверху, bottom - снизу","top")
-                result=promo.configure(args.config,text=text,url=url,position=position)
+                    profile_language = config.get("autopilot", {}).get("editorial", {}).get("output_language", "ru")
+                    text=ask("Текст плашки",previous.get("text","YOUR PRODUCT" if profile_language == "en" else "ТВОЙ ПРОДУКТ"))
+                    url=ask("Ссылка на продукт или ваша реферальная ссылка (HTTPS)",previous.get("url",""))
+                    position=ask("Положение: top - сверху, bottom - снизу",previous.get("position","top"))
+                else:
+                    text=args.text if args.text is not None else previous.get("text")
+                    url=args.url if args.url is not None else previous.get("url")
+                    position=args.position or previous.get("position","top")
+                    if text is None or url is None:
+                        raise ValueError("Для первой кампании укажите --text и --url")
+                result=promo.configure(args.config,text=text,url=url,position=position,
+                    artwork=args.artwork,drop_artwork=args.no_artwork,start=args.start,duration=args.seconds,
+                    cta=args.cta,language=args.language)
+        elif args.command == "market":
+            from .onboarding import private_json
+            editorial = config.setdefault("autopilot", {}).setdefault("editorial", {})
+            editorial.update(provider="codex", output_language=args.language)
+            private_json(args.config,config)
+            result={"output_language": args.language, "applies_to": "new_renders_only",
+                    "subtitle_language": "source", "campaign_language_command": "viceclip promo --language " + args.language}
+        elif args.command == "youtube":
+            from .publishers import youtube_readiness
+            from .rights import get_account
+            if args.privacy and not args.video_id:
+                raise ValueError("--privacy используется вместе с --video-id")
+            account = get_account(config, args.account)
+            if account.get("platform") != "youtube":
+                raise ValueError("Выберите подключённый аккаунт YouTube")
+            result = youtube_readiness(account, video_id=args.video_id, expected_privacy=args.privacy)
         elif args.command == "connect":
             import os
             import re

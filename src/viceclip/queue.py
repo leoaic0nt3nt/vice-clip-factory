@@ -22,11 +22,12 @@ def canonical_time(value=None):
 
 class Queue:
     def __init__(self, path):
-        Path(path).parent.mkdir(parents=True, exist_ok=True)
-        self.db = sqlite3.connect(path, timeout=20)
+        self.path = Path(path).expanduser().resolve()
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.db = sqlite3.connect(self.path, timeout=20)
         # SQLite stores private resumable session URLs. Keep the file user-readable only.
         import os
-        os.chmod(path, 0o600)
+        os.chmod(self.path, 0o600)
         self.db.row_factory = sqlite3.Row
         self.db.execute("""CREATE TABLE IF NOT EXISTS jobs (
             id INTEGER PRIMARY KEY, sha256 TEXT NOT NULL, account TEXT NOT NULL, platform TEXT NOT NULL,
@@ -92,6 +93,26 @@ class Queue:
             raise ValueError("Only unknown or interrupted uploading jobs can be reconciled")
 
     def run(self, config, *, execute=False, uploader=None):
+        if not execute:
+            return self._run(config, execute=False, uploader=uploader)
+        import fcntl
+        import os
+        lock_path = str(self.path) + ".upload.lock"
+        with open(lock_path, "a") as lock:
+            os.fchmod(lock.fileno(), 0o600)
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return []
+            # A previous process stopped after the session URL was persisted.
+            # The uploader queries that same session before sending anything.
+            with self.db:
+                self.db.execute("""UPDATE jobs SET status='processing'
+                    WHERE status='uploading' AND platform='youtube'
+                    AND stage='upload_started' AND session_uri IS NOT NULL""")
+            return self._run(config, execute=True, uploader=uploader)
+
+    def _run(self, config, *, execute, uploader):
         results = []
         for raw in self.db.execute("SELECT * FROM jobs WHERE status IN ('approved','processing') AND scheduled_at<=? ORDER BY scheduled_at,id", (utcnow().isoformat(),)).fetchall():
             job = dict(raw)

@@ -21,6 +21,9 @@ Remotion checkout on the author's disk may be sparse; Git records the full commi
 
 Bundled Inter Tight static fonts are derived from the Inter Tight variable font;
 its SIL Open Font License is in [assets/fonts/OFL.txt](assets/fonts/OFL.txt).
+Bundled Roboto Condensed uses the SIL Open Font License. See the
+[license](assets/fonts/RobotoCondensed/OFL.txt) and [pinned source](assets/fonts/RobotoCondensed/source.json).
+The demo sponsor icon in `assets/promo/creator-demo.png` was created for this project with ChatGPT Image.
 Original diagrams, film-strip art and synthetic fixture are authored for this project.
 The original Instagram references and design-reference PDF are not redistributed.
 

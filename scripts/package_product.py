@@ -46,12 +46,14 @@ def main():
             'VICE CLIP FACTORY\n\n1. Open Terminal in this folder and run: bash install.sh\n'
             '2. Activate the environment as printed, then: codex login\n'
             '   Your Codex account needs GPT-6.2 Sol access. Sampled frames and transcript are sent to Codex.\n'
-            '   Run: viceclip setup\n'
-            '3. Configure promotion: viceclip promo; get profile URL: viceclip revenue link\n'
+            '   Run: viceclip setup --language en --youtube-privacy private\n'
+            '3. Configure promotion: viceclip promo; see docs/PROMO.md for custom artwork.\n'
+            '   Get the profile URL: viceclip revenue link\n'
             '4. Preview: viceclip autopilot tick --preview\n'
             '5. Publish: viceclip autopilot start --persistent --execute\n\n'
             'Russian guide: output/pdf/GTA-VI-Clip-Factory-Guide-by-Leo.pdf\n'
-            'Account connection: docs/CONNECT_ACCOUNTS.md\n'
+            'YouTube private upload: docs/YOUTUBE.md\n'
+            'Audience, offer and revenue: docs/MONETIZATION.md\n'
             'Your credentials and computer/server remain under your control.\n')
         archive.writestr(prefix+'MANIFEST.json',json.dumps({'version':__version__,'files':manifest},indent=2)+'\n')
     print(json.dumps({'package':str(a.output.resolve()),'files':len(manifest),

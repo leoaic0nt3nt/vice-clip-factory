@@ -45,7 +45,7 @@ def base_config(config_path):
              "source_ids":[],"accounts":[],"auto_approve":True,"min_score":45,
              "clips_per_source":2,"min_clip_seconds":20,"max_clip_seconds":40,
              "posting_gap_seconds":14400,"max_source_seconds":14400,
-             "editorial":{"provider":"codex","model":"gpt-6.2-sol","timeout_seconds":180},
+             "editorial":{"provider":"codex","model":"gpt-6.2-sol","timeout_seconds":180,"output_language":"en"},
              "asr":{"enabled":True,"provider":"faster-whisper","model":"small","device":"cpu","language":None}}}
 
 
@@ -84,7 +84,8 @@ def yes(prompt, default=False):
     return value in ("да","д","yes","y","1")
 
 
-def setup(config_path=None, *, non_interactive=False, sources=None, inbox=None, no_asr=False, execute=False, accept_terms=False):
+def setup(config_path=None, *, non_interactive=False, sources=None, inbox=None, no_asr=False,
+          execute=False, accept_terms=False, language=None, youtube_privacy=None):
     path = Path(config_path or default_config_path()).expanduser().resolve()
     if path.exists():
         if non_interactive or not yes("Настройка уже существует. Заменить её?",False):
@@ -104,6 +105,7 @@ def setup(config_path=None, *, non_interactive=False, sources=None, inbox=None, 
         print("Используйте доступные вам источники и соблюдайте правила площадок. Условия: docs/TERMS.md.")
         if not yes("Продолжить настройку",True):
             raise ValueError("Настройка отменена")
+        language = language or ask("Язык выпуска (en / ru)","en").lower()
         config["style"]["brand"] = ask("Подпись вашего канала","@your_channel")
         while True:
             url = ask("Ссылка на канал YouTube, Twitch или запись (Enter - закончить)")
@@ -166,6 +168,14 @@ def setup(config_path=None, *, non_interactive=False, sources=None, inbox=None, 
         for account in config["accounts"]:account["max_posts_per_day"]=max(1,posts)
         config["autopilot"]["posting_gap_seconds"]=max(60,86400//max(1,posts))
         config["autopilot"]["execute"]=bool(config["accounts"]) and yes("Публиковать готовые ролики автоматически и публично",False)
+    if language is not None:
+        if language not in ("en", "ru"):
+            raise ValueError("Язык выпуска должен быть en или ru")
+        config["autopilot"]["editorial"]["output_language"] = language
+    if youtube_privacy is not None:
+        if youtube_privacy not in ("private", "unlisted", "public"):
+            raise ValueError("Видимость YouTube должна быть private, unlisted или public")
+        config["autopilot"]["privacy"] = youtube_privacy
     if inbox:
         config["autopilot"]["inboxes"][0]["path"]=str(Path(inbox).expanduser().resolve())
     if no_asr:config["autopilot"]["asr"]["enabled"]=False

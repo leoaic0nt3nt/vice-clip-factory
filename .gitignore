@@ -26,3 +26,4 @@ credentials*.json
 client_secret*.json
 examples/demo-source.mp4
 dist/
+promo-assets/

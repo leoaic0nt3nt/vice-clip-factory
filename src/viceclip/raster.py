@@ -6,6 +6,8 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
 
+from .captions import CAPTION_Y, ENTRANCE_SECONDS, IVORY, caption_cues, caption_font, uppercase_caption
+
 WIDTH, HEIGHT, FPS = 1080, 1920, 30
 ACCENT = "#FFB647"
 BUNDLED_FONT = Path(__file__).resolve().parents[2] / "assets" / "fonts" / "InterTight-Bold.ttf"
@@ -35,9 +37,9 @@ def _lines(text, face, width):
         yield start, text[start:end]
 
 
-def _fit(text, size, width, max_lines, configured, max_height):
+def _fit(text, size, width, max_lines, configured, max_height, face_loader):
     while True:
-        face = font(size, configured)
+        face = face_loader(size, configured)
         lines = list(_lines(text, face, width))
         if size == 1 or (len(lines) <= max_lines and (size + 7) * len(lines) <= max_height
                          and all(face.getlength(line) <= width for _, line in lines)):
@@ -46,9 +48,9 @@ def _fit(text, size, width, max_lines, configured, max_height):
 
 
 def _text(text, *, size, width, max_lines, configured, stroke=2, color="white",
-          active=None, panel=False, max_height=HEIGHT):
+          active=None, panel=False, max_height=HEIGHT, face_loader=font, accent=ACCENT, shadow=False):
     padding = 22 if panel else stroke + 3
-    face, lines = _fit(text, size, width, max_lines, configured, max_height - 2 * padding)
+    face, lines = _fit(text, size, width, max_lines, configured, max_height - 2 * padding, face_loader)
     line_height = face.size + 7
     content_width = max(face.getlength(line) for _, line in lines)
     image = Image.new("RGBA", (math.ceil(content_width) + 2 * padding, line_height * len(lines) + 2 * padding))
@@ -58,49 +60,15 @@ def _text(text, *, size, width, max_lines, configured, stroke=2, color="white",
     for index, (offset, line) in enumerate(lines):
         x = (image.width - face.getlength(line)) / 2
         y = padding + index * line_height + round(face.size * .80)
+        if shadow:
+            draw.text((x, y + 3), line, anchor="ls", font=face, fill="#090B11", stroke_width=stroke,
+                      stroke_fill="#090B11")
         draw.text((x, y), line, anchor="ls", font=face, fill=color, stroke_width=stroke, stroke_fill="#101016")
         if active and active[0] < offset + len(line) and active[1] > offset:
             left, right = max(0, active[0] - offset), min(len(line), active[1] - offset)
             draw.text((x + face.getlength(line[:left]), y), line[left:right], anchor="ls", font=face,
-                      fill=ACCENT, stroke_width=stroke, stroke_fill="#101016")
+                      fill=accent, stroke_width=stroke, stroke_fill="#101016")
     return image
-
-
-def _caption_text(words):
-    text, spans = "", []
-    for word in words:
-        if text and not re.match(r"^[,.;:!?…]|^-\w", word):
-            text += " "
-        spans.append((len(text), len(text) + len(word)))
-        text += word
-    return text, spans
-
-
-def caption_cues(captions, mode):
-    """Group up to five words with true word timing when it is available."""
-    cues = []
-    if mode == "meme":
-        return cues
-    for caption in captions:
-        timed = caption.get("words") or []
-        tokens = [word["word"].strip() for word in timed] if timed else caption["text"].split()
-        count = len(tokens)
-        if not count:
-            continue
-        for first in range(0, count, 5):
-            last = min(first + 5, count)
-            text, spans = _caption_text(tokens[first:last])
-            if timed:
-                words = timed[first:last]
-                cue = {"start": words[0]["start"], "end": max(word["end"] for word in words), "text": text}
-                if mode == "words":
-                    cue["accents"] = [(word["start"], word["end"], span) for word, span in zip(words, spans)]
-            else:
-                start, end = caption["start"], caption["end"]
-                cue = {"start": start + (end - start) * first / count,
-                       "end": start + (end - start) * last / count, "text": text}
-            cues.append(cue)
-    return cues
 
 
 def _compact_badge(text, label, configured):
@@ -138,8 +106,11 @@ def overlay_timeline(directory, captions, hook, duration, style, hook_end):
     portrait = style["layout"] == "portrait"
     compact = style["ad_format"] == "compact"
     meme = style["caption_mode"] == "meme"
+    modern_captions = portrait and style.get("caption_style", "gaming") != "classic"
+    caption_path = style.get("caption_font_path") or configured
     sponsor = " ".join((style.get("sponsor_text") or "").split())
-    top_sponsor = style.get("sponsor_position") == "top" and not compact
+    motion_promo = style["ad_format"] == "motion"
+    top_sponsor = style.get("sponsor_position") == "top" and not (compact or motion_promo)
     brand = style.get("brand", "" if portrait else "@leo_ai_content")
     if portrait and brand == "@your_channel":
         brand = ""
@@ -159,11 +130,20 @@ def overlay_timeline(directory, captions, hook, duration, style, hook_end):
     if brand:
         add_text("brand", brand, 0, duration, y=129 if portrait else 140, size=29 if portrait else 32,
                  max_lines=1, color="white" if portrait else "#5274FF")
-    if portrait:
+    if modern_captions:
+        if hook:
+            image = _text(hook.upper(), size=81, width=805, max_lines=2, configured=caption_path,
+                          stroke=4, panel=meme, max_height=209, color=IVORY, face_loader=caption_font, shadow=True)
+            add("hook", 0, hook_end, image, 226)
+    elif portrait:
         add_text("hook", hook, 0, hook_end, y=226, size=74, width=840, max_lines=2, stroke=7, panel=meme)
     else:
         add_text("hook", hook, 0, hook_end, y=230 if top_sponsor else 285, size=48 if top_sponsor else 65)
-    if sponsor and compact:
+    if sponsor and motion_promo:
+        from .creative import layers as promo_layers
+        for start, end, image, y in promo_layers(style, duration, hook_end, font, _text):
+            add("promo", start, end, image, y)
+    elif sponsor and compact:
         # Put the badge below any opening text that remains during a short clip.
         overlay_hook = bool(hook and ad_start < hook_end)
         if style.get("sponsor_position", "top") == "bottom":
@@ -183,7 +163,28 @@ def overlay_timeline(directory, captions, hook, duration, style, hook_end):
         prefix = "Реклама: " if style.get("sponsored") else "DEMO SLOT: "
         add_text("promo", prefix + sponsor, 0, duration, y=510 if top_sponsor else 1550,
                  size=30 if top_sponsor else 34, width=870)
-    if style["caption_mode"] != "legacy":
+    if style["caption_mode"] != "legacy" and modern_captions:
+        accent_color = style.get("caption_accent", ACCENT)
+
+        def add_caption(layer, cue, start, end, active=None):
+            if start >= end or not cue["text"].strip():
+                return
+            text, span = uppercase_caption(cue["text"], active)
+            image = _text(text, size=81, width=775, max_lines=2, configured=caption_path,
+                          stroke=4, active=span, color=IVORY, face_loader=caption_font,
+                          accent=accent_color, shadow=True)
+            settle = min(end, cue["start"] + ENTRANCE_SECONDS)
+            if start < settle:
+                arrived = image.resize((round(image.width * .96), round(image.height * .96)), Image.Resampling.LANCZOS)
+                add(layer, start, settle, arrived, CAPTION_Y + 5)
+                start = settle
+            add(layer, start, end, image, CAPTION_Y)
+
+        for cue in captions:
+            add_caption("caption", cue, cue["start"], cue["end"])
+            for start, end, active in cue.get("accents", []):
+                add_caption("accent", cue, start, end, active)
+    elif style["caption_mode"] != "legacy":
         options = {"y": 1146, "size": 76, "width": 825, "max_lines": 2, "stroke": 7}
         for cue in captions:
             add_text("caption", cue["text"], cue["start"], cue["end"], **options)

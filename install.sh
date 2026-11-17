@@ -5,7 +5,7 @@ profile="autopilot"
 system_deps=1
 preload_model=0
 in_place=0
-release="0.4.0"
+release="0.5.0"
 while (($#)); do
   case "$1" in
     --profile) profile="${2:?Specify core or autopilot}"; shift 2 ;;

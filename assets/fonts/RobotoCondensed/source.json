@@ -1,0 +1,9 @@
+{
+  "family": "Roboto Condensed",
+  "license": "OFL-1.1",
+  "repository": "https://github.com/google/fonts",
+  "commit": "69d0549e8fc7ad72e1531734c81237be401ec4fd",
+  "source_file": "ofl/robotocondensed/RobotoCondensed[wght].ttf",
+  "local_file": "RobotoCondensed.ttf",
+  "render_weight": 900
+}

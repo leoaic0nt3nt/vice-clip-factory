@@ -506,6 +506,8 @@ class Autopilot:
             clip = {"file": str(target), "sha256": fingerprint(target), "score": candidate["score"],
                     "title": candidate["hook"], "source_id": source["id"],
                     "sponsored": bool(render_style.get("sponsored", False))}
+            if candidate.get("output_language"):
+                clip["language"] = candidate["output_language"]
             if campaign:
                 promo_dir = work / "clips" / "youtube-promo"
                 variant = promo_dir / (candidate["id"] + ".mp4")
@@ -591,6 +593,8 @@ class Autopilot:
                             "sponsored": selected.get("sponsored", clip.get("sponsored", runtime.get("style", {}).get("sponsored", False)))}
                 if selected.get("public_url"):
                     metadata["public_url"] = selected["public_url"]
+                if clip.get("language"):
+                    metadata["language"] = clip["language"]
                 if selected.get("campaign"):
                     metadata["campaign"] = selected["campaign"]
                 job = queue.add(selected["file"], source["id"], account["id"], metadata, runtime, self._schedule(queue, account["id"]))

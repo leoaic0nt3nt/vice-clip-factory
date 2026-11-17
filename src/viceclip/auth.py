@@ -112,6 +112,9 @@ def connect_youtube(client_secrets_file, token_file):
             access_type="offline", prompt="consent", timeout_seconds=300)
     if not credentials.refresh_token:
         raise ValueError("Google did not grant offline access; reconnect with consent to receive a refresh token")
+    granted = getattr(credentials, "granted_scopes", None)
+    if granted is not None and not set(YOUTUBE_SCOPES).issubset(granted):
+        raise ValueError("Google did not grant YouTube upload and read permissions; reconnect and allow both")
     identity = _http_json("https://www.googleapis.com/youtube/v3/channels?part=id,snippet&mine=true",
                           token=credentials.token)
     channels = identity.get("items", [])

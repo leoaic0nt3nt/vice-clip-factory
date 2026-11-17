@@ -1,5 +1,6 @@
 """One-time product/referral promotion settings for newly rendered YouTube clips."""
 from pathlib import Path
+import re
 from urllib.parse import urlparse
 
 from .onboarding import private_json
@@ -33,7 +34,26 @@ def active_campaign(config):
         raise ValueError("Рекламная плашка поддерживается для YouTube; Instagram получает обычный ролик")
     if campaign.get("sponsored", True) is not True:
         raise ValueError("Рабочая реклама должна сохранять рекламный статус")
-    return validate(campaign.get("text"), campaign.get("url"), campaign.get("position", "bottom"))
+    result = validate(campaign.get("text"), campaign.get("url"), campaign.get("position", "bottom"))
+    if campaign.get("format") == "motion":
+        from .creative import timing
+        start, duration = timing(campaign.get("start", 4), campaign.get("duration", 4))
+        language = campaign.get("language", "ru")
+        if language not in ("ru", "en"):
+            raise ValueError("Язык промо должен быть en или ru")
+        cta = campaign.get("cta") or ("Link in profile" if language == "en" else "Ссылка в профиле")
+        if not isinstance(cta, str) or not cta.strip() or len(cta) > 38 or any(ord(char) < 32 for char in cta):
+            raise ValueError("CTA должен содержать до 38 символов в одной строке")
+        cta = cta.strip()
+        result.update(format="motion", start=start, duration=duration, language=language, cta=cta)
+        artwork = campaign.get("artwork")
+        if artwork is not None:
+            if (not isinstance(artwork, dict) or not isinstance(artwork.get("path"), str)
+                    or not Path(artwork["path"]).is_absolute()
+                    or not re.fullmatch(r"[a-f0-9]{64}", str(artwork.get("sha256", "")))):
+                raise ValueError("Изображение кампании сохранено некорректно. Загрузите его через viceclip promo")
+            result["artwork"] = {"path": artwork["path"], "sha256": artwork["sha256"]}
+    return result
 
 
 def base_style(config):
@@ -44,11 +64,24 @@ def base_style(config):
 
 
 def youtube_style(style, campaign):
-    return {**style, "sponsor_text": campaign["text"], "sponsor_position": campaign["position"], "sponsored": True}
+    result = {**style, "sponsor_text": campaign["text"], "sponsor_position": campaign["position"], "sponsored": True}
+    if campaign.get("format") == "motion":
+        result.update(ad_format="motion", sponsor_artwork=campaign.get("artwork"),
+                      sponsor_start=campaign["start"], sponsor_duration=campaign["duration"],
+                      sponsor_language=campaign["language"], sponsor_cta=campaign["cta"])
+    return result
 
 
 def campaign_caption(campaign):
     text = campaign["text"]
+    if campaign.get("format") == "motion":
+        if campaign["cta"].casefold() not in text.casefold():
+            text += " · " + campaign["cta"]
+        return ("Paid promotion. " if campaign.get("language") == "en" else "Реклама. ") + text
+    if campaign.get("language") == "en":
+        if "link in profile" not in text.lower():
+            text += " · Link in profile"
+        return "Paid promotion. " + text
     if "ссылка в профиле" not in text.lower():
         text += " · Ссылка в профиле"
     return "Реклама. " + text
@@ -63,9 +96,26 @@ def receipt(config):
             "instagram": "Instagram получает обычную версию без рекламной плашки и рекламной подписи."}
 
 
-def configure(config_path, *, text, url, position="top"):
+def configure(config_path, *, text, url, position="top", artwork=None, drop_artwork=False,
+              start=None, duration=None, cta=None, language=None):
     config = load_config(config_path)
-    config["campaign"] = validate(text, url, position)
+    previous = config.get("campaign", {})
+    campaign = validate(text, url, position)
+    length = previous.get("duration", 4) if duration is None else duration
+    start_at = previous.get("start", 4) if start is None else start
+    language = language or previous.get("language") or config.get("autopilot", {}).get("editorial", {}).get("output_language", "ru")
+    campaign.update(format="motion", start=start_at, duration=length, language=language)
+    if cta is not None:
+        campaign["cta"] = cta
+    elif previous.get("language") == language and previous.get("cta"):
+        campaign["cta"] = previous["cta"]
+    if artwork:
+        from .creative import snapshot
+        campaign["artwork"] = snapshot(artwork, Path(config_path).expanduser().resolve().parent / "promo-assets")
+    elif not drop_artwork and previous.get("url") == url and previous.get("artwork"):
+        campaign["artwork"] = previous["artwork"]
+    config["campaign"] = campaign
+    config["campaign"] = active_campaign(config)
     private_json(config_path, config)
     return receipt(config)
 

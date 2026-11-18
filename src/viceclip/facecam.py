@@ -1,5 +1,81 @@
-"""Framing for a webcam rectangle already present in a recording."""
+"""Detect and frame a webcam panel embedded in a stream recording."""
 from fractions import Fraction
+from statistics import median
+
+
+FACECAM_OBSERVATIONS_SCHEMA = {
+    "type": "array",
+    "items": {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["at", "rect"],
+        "properties": {
+            "at": {"type": "number"},
+            "rect": {"type": "array", "items": {"type": "number"}},
+        },
+    },
+}
+
+FACECAM_PROMPT = """
+For each clip, inspect its sampled frames for a fixed, bounded rectangular webcam
+inset showing a real person in a separate live camera feed over gameplay. Look for
+real facial movement or changes in pose within the inset while the game changes
+independently. HUD portraits, cutscenes, character faces, menus, chat, logos and
+pictures do not count. Use an empty facecam_observations array if uncertain, if the
+inset is covered or missing in any observed part of the clip, or if it changes
+position or size. Chroma-key cutouts without a distinct panel also do not count.
+If confirmed, give three to six independent observations across the clip, spanning
+its beginning, middle and end. For each, use the exact labeled source timestamp
+as at and measure rect [left, top, width, height] of the whole camera picture,
+excluding nearby chat, HUD and any decorative frame. Normalize coordinates to
+0–1 within that individual video thumbnail, ignoring timestamp labels and padding.
+Measure the panel on each frame. Do not guess coordinates or reuse another clip's.
+"""
+
+
+def _overlap(a, b):
+    x, y, w, h = a
+    bx, by, bw, bh = b
+    width = max(0, min(x + w, bx + bw) - max(x, bx))
+    height = max(0, min(y + h, by + bh) - max(y, by))
+    intersection = width * height
+    return intersection / (w * h + bw * bh - intersection)
+
+
+def validate_detected_facecam(observations, sampled_times, *, start, end):
+    """Reduce corroborated observations to a renderer rectangle, or omit the inset."""
+    if not isinstance(observations, list) or not 3 <= len(observations) <= 6:
+        return None
+    labels = {round(second, 2) for second in sampled_times if start <= second <= end}
+    rectangles = {}
+    for observation in observations:
+        if not isinstance(observation, dict) or observation.keys() != {"at", "rect"}:
+            return None
+        at = observation["at"]
+        if type(at) not in (int, float) or at not in labels or at in rectangles:
+            return None
+        try:
+            rect = validate_facecam({"rect": observation["rect"]})["rect"]
+        except ValueError:
+            return None
+        x, y, width, height = rect
+        if not (.06 <= width <= .38 and .07 <= height <= .55 and .009 <= width * height <= .16):
+            return None
+        # Embedded camera panels occupy a screen edge. The interior is primarily
+        # gameplay, including cutscenes and nearby in-world faces.
+        if min(x, y, 1 - x - width, 1 - y - height) > .16:
+            return None
+        if any(_overlap(rect, previous) < .72 for previous in rectangles.values()):
+            return None
+        rectangles[at] = rect
+    span = end - start
+    if min(rectangles) > start + span / 3 or max(rectangles) < end - span / 3:
+        return None
+    coordinates = [median(values) for values in zip(*rectangles.values())]
+    try:
+        return validate_facecam({"rect": coordinates})
+    except ValueError:
+        return None
 
 
 def validate_facecam(spec):

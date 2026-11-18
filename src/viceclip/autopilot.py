@@ -161,11 +161,12 @@ class Autopilot:
         key = "url:" + source["id"] + ":" + digest
         saved_live = self.db.execute("SELECT value FROM worker_meta WHERE key=?", ("live_source:" + source["id"],)).fetchone()
         if source.get("live") is True or (self.settings.get("live_segments") is True and saved_live and saved_live[0] == "true"):
-            seconds = max(30, int(self.settings.get("live_segment_seconds", 180)))
+            seconds = self._live_segment_seconds()
             key += ":" + str(int(self.clock()) // seconds)
         return key
 
     def _gather(self, report):
+        current_twitch_live = set()
         explicit = {s["id"]: dict(s) for s in self.config.get("sources", []) if s.get("enabled", True)}
         allowed_ids = self.settings.get("source_ids")
         for source in explicit.values():
@@ -203,10 +204,14 @@ class Autopilot:
                 for source in found.get("sources", []):
                     source = {**source, "creator": creator["id"], "enabled": True, "selected": True,
                               "platforms": creator.get("destinations") or self._platforms()}
-                    self._record(self._source_key(source), source)
+                    key = self._source_key(source)
+                    self._record(key, source)
+                    if creator.get("platform") == "twitch" and source.get("live") is True:
+                        current_twitch_live.add(key)
             except Exception as exc:
                 report["errors"].append({"creator": creator.get("id"), "error": _error(exc)})
         self._scout_queries(report)
+        return current_twitch_live
 
     def _scout_queries(self, report):
         queries = self.settings.get("scout_queries", [])
@@ -318,19 +323,33 @@ class Autopilot:
                 return {"sources": sources, "skipped": []}
         if creator.get("platform") == "twitch":
             from . import auth
-            if hasattr(auth, "twitch_token"):
-                os.environ[creator.get("token_env", "TWITCH_ACCESS_TOKEN")] = auth.twitch_token(creator)
-        if creator.get("platform") == "twitch" and not creator.get("remote_id"):
-            login = creator.get("login") or urllib.parse.urlparse(creator.get("url", "")).path.strip("/").split("/")[0]
             client = os.environ.get(creator.get("client_id_env", "TWITCH_CLIENT_ID"), "")
-            token = os.environ.get(creator.get("token_env", "TWITCH_ACCESS_TOKEN"), "")
-            if not login or not client or not token:
-                return {"sources": [], "skipped": [{"creator": creator["id"], "reason": "Twitch connection is not configured"}]}
-            users = integrations._json_get("https://api.twitch.tv/helix/users", {"login": login},
-                                          {"Client-Id": client, "Authorization": "Bearer " + token})
-            if not users.get("data"):
-                return {"sources": [], "skipped": [{"creator": creator["id"], "reason": "Twitch creator was not found"}]}
-            creator["remote_id"] = users["data"][0]["id"]
+            token = auth.twitch_token(creator)
+            os.environ[creator.get("token_env", "TWITCH_ACCESS_TOKEN")] = token
+            headers = {"Client-Id": client, "Authorization": "Bearer " + token}
+            if not creator.get("remote_id"):
+                login = creator.get("login") or urllib.parse.urlparse(creator.get("url", "")).path.strip("/").split("/")[0]
+                if not login:
+                    return {"sources": [], "skipped": [{"creator": creator["id"], "reason": "Twitch creator has no channel login or ID"}]}
+                users = integrations._json_get("https://api.twitch.tv/helix/users", {"login": login}, headers)
+                if not users.get("data"):
+                    return {"sources": [], "skipped": [{"creator": creator["id"], "reason": "Twitch creator was not found"}]}
+                creator["remote_id"] = users["data"][0]["id"]
+            if self.settings.get("live_segments") is True:
+                streams = integrations._json_get("https://api.twitch.tv/helix/streams",
+                                                 {"user_id": creator["remote_id"], "first": 1}, headers)
+                for stream in streams.get("data", []):
+                    login = stream.get("user_login", "")
+                    stream_id = str(stream.get("id", ""))
+                    if (stream.get("type") != "live" or str(stream.get("user_id", "")) != str(creator["remote_id"])
+                            or not re.fullmatch(r"[A-Za-z0-9_]+", login) or not re.fullmatch(r"[0-9]+", stream_id)):
+                        continue
+                    permission = dict(creator.get("permission", {}))
+                    if permission.get("scope") != "all_channel_uploads":
+                        permission = {"status": "unverified", "reference": "Discovery does not grant rights"}
+                    return {"sources": [{"id": "twitch-live-" + stream_id, "url": "https://www.twitch.tv/" + login,
+                                         "title": stream.get("title", ""), "creator": creator["id"], "live": True,
+                                         "permission": permission}], "skipped": []}
         return self.discoverer({**self.config, "creators": [creator]}, self.settings.get("lookback_hours", 24))
 
     def _platforms(self):
@@ -427,6 +446,9 @@ class Autopilot:
                                 timeout=int(self.settings.get("download_timeout_seconds", 900)))
         return Path(json.loads(result.stdout)["input"]).resolve()
 
+    def _live_segment_seconds(self):
+        return min(900, max(30, int(self.settings.get("live_segment_seconds", 180))))
+
     def _capture_live(self, url, work):
         binary = integrations.executable("yt-dlp", "VICECLIP_YT_DLP", ".venv/bin/yt-dlp")
         result = self._run([binary, "--ignore-config", "--no-playlist", "-f", "b[height<=1080]/b", "--get-url", "--", url],
@@ -434,7 +456,7 @@ class Autopilot:
         urls = [x.strip() for x in result.stdout.splitlines() if x.strip().startswith("https://")]
         if len(urls) != 1:
             raise ValueError("Live capture requires a single muxed public stream URL")
-        seconds = min(900, max(30, int(self.settings.get("live_segment_seconds", 180))))
+        seconds = self._live_segment_seconds()
         target = work / "live-segment.mp4"
         temporary = work / "live-segment.partial.mp4"
         self._run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-i", urls[0],
@@ -673,7 +695,7 @@ class Autopilot:
         with self._lock() as acquired:
             if not acquired:
                 return {**report, "state": "busy"}
-            self._gather(report)
+            current_twitch_live = self._gather(report)
             runtime = self._runtime()
             queue = self.queue_factory(self._path(self.settings.get("publish_db", "data/publish.sqlite3")))
             try:
@@ -687,6 +709,11 @@ class Autopilot:
                         break
                     source = json.loads(raw["source_json"])
                     if not self._is_active(source):
+                        continue
+                    if (source["id"].startswith("twitch-live-") and raw["stage"] in ("new", "waiting", "failed")
+                            and not raw["input_path"] and raw["key"] not in current_twitch_live):
+                        if raw["key"] != self._source_key(source):
+                            self._set(raw["key"], stage="archived")
                         continue
                     if processed_count >= int(self.settings.get("max_sources_per_tick", 2)):
                         break

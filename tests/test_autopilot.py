@@ -153,6 +153,61 @@ class AutopilotTests(unittest.TestCase):
             sources=self.worker()._discover_creator(creator)["sources"]
         self.assertEqual([s["url"] for s in sources],["https://www.youtube.com/watch?v=video000001"])
 
+    def test_configured_twitch_channel_records_one_segment_per_window(self):
+        self.config["sources"] = []
+        self.config["source_policy"] = {"mode": "configured_sources", "user_responsible": True}
+        self.config["creators"] = [{"id": "mine", "platform": "twitch", "url": "https://www.twitch.tv/creator"}]
+        self.config["autopilot"].update(live_segments=True, live_segment_seconds=180)
+        stream = {"id": "12345", "user_id": "456", "user_login": "creator", "type": "live", "title": "Story"}
+
+        def api(endpoint, params, headers):
+            self.assertEqual(headers, {"Client-Id": "client", "Authorization": "Bearer token"})
+            if endpoint.endswith("/users"):
+                self.assertEqual(params, {"login": "creator"})
+                return {"data": [{"id": "456"}]}
+            self.assertTrue(endpoint.endswith("/streams"))
+            self.assertEqual(params, {"user_id": "456", "first": 1})
+            return {"data": [stream]}
+
+        with patch.dict(os.environ, {"TWITCH_CLIENT_ID": "client", "TWITCH_ACCESS_TOKEN": "token"}, clear=True), \
+                patch("viceclip.autopilot.integrations._json_get", side_effect=api), \
+                patch.object(Autopilot, "_capture_live", return_value=self.input) as capture:
+            worker = self.worker()
+            self.assertFalse(worker.tick()["errors"])
+            self.assertEqual(worker.tick()["processed"], [])
+            self.now += 180
+            self.assertFalse(worker.tick()["errors"])
+            self.assertEqual(self.calls, ["twitch-live-12345", "twitch-live-12345"])
+            self.assertEqual(capture.call_count, 2)
+            self.assertEqual(capture.call_args.args[0], "https://www.twitch.tv/creator")
+
+    def test_offline_twitch_channel_falls_back_to_clips_without_capturing_stale_live_job(self):
+        self.config["sources"] = []
+        self.config["source_policy"] = {"mode": "configured_sources", "user_responsible": True}
+        creator = {"id": "mine", "platform": "twitch", "remote_id": "456"}
+        self.config["creators"] = [creator]
+        self.config["autopilot"].update(live_segments=True, live_segment_seconds=180, max_sources_per_tick=0)
+        stream = {"id": "12345", "user_id": "456", "user_login": "creator", "type": "live"}
+        clip = {"id": "ExampleClip", "url": "https://clips.twitch.tv/ExampleClip", "title": "Clip"}
+        responses = [{"data": [stream]}, {"data": []}, {"data": [clip]}]
+        with patch.dict(os.environ, {"TWITCH_CLIENT_ID": "client", "TWITCH_ACCESS_TOKEN": "token"}, clear=True), \
+                patch("viceclip.autopilot.integrations._json_get", side_effect=responses) as api:
+            worker = self.worker(downloader=lambda *_: self.input)
+            self.assertEqual(worker.tick()["processed"], [])
+            worker.settings["max_sources_per_tick"] = 2
+            self.now += 180
+            self.assertFalse(worker.tick()["errors"])
+            self.assertEqual(self.calls, ["twitch-ExampleClip"])
+            self.assertTrue(api.call_args.args[0].endswith("/clips"))
+
+    def test_twitch_live_capture_is_opt_in(self):
+        creator = {"id": "mine", "platform": "twitch", "remote_id": "456"}
+        with patch.dict(os.environ, {"TWITCH_CLIENT_ID": "client", "TWITCH_ACCESS_TOKEN": "token"}, clear=True), \
+                patch("viceclip.autopilot.integrations._json_get", return_value={"data": []}) as api:
+            self.assertEqual(self.worker()._discover_creator(creator)["sources"], [])
+            api.assert_called_once()
+            self.assertTrue(api.call_args.args[0].endswith("/clips"))
+
     def test_query_scout_autonomous_ingest_requires_operator_setting(self):
         self.config["source_policy"]={"mode":"configured_sources","user_responsible":True}
         self.config["autopilot"]["scout_queries"]=["GTA VI gameplay"]

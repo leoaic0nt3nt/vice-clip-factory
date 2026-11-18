@@ -92,6 +92,23 @@ class ResponseTests(unittest.TestCase):
             editorial.validate_response({"clips": [story_clip(), second]}, story_mode=True,
                                         **LIMITS)
 
+    def test_mission_preserves_goal_action_and_outcome_across_three_cuts(self):
+        clip = {**story_clip(), "kind": "mission", "end": 72, "action_at": 32, "payoff_at": 68,
+                "cuts": [{"start": 5, "end": 12}, {"start": 29, "end": 37},
+                         {"start": 65, "end": 72}]}
+        candidates = editorial.validate_response({"clips": [clip]}, story_mode=True, mission_mode=True, **LIMITS)
+        self.assertEqual(candidates[0]["story_ranges"], [(5, 12), (29, 37), (65, 72)])
+        with self.assertRaisesRegex(editorial.EditorialError, "Сюжетные события"):
+            editorial.validate_response({"clips": [{**clip, "action_at": 40}]}, story_mode=True,
+                                        mission_mode=True, **LIMITS)
+
+    def test_uncertain_camera_keeps_the_selected_clip_without_a_panel(self):
+        clip = {**story_clip(), "facecam_observations": [{"at": 8, "rect": [0, .3, .2, .3]}]}
+        candidates = editorial.validate_response({"clips": [clip]}, story_mode=True, auto_facecam=True,
+                                                 frame_times=[8, 16, 24], **LIMITS)
+        self.assertEqual(len(candidates), 1)
+        self.assertNotIn("facecam", candidates[0])
+
 
 class RequestTests(unittest.TestCase):
     def setUp(self):

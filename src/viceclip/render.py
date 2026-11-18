@@ -118,12 +118,10 @@ def render(input_path, plan, output_dir, style=None, top=None):
     if fingerprint(input_path) != plan["analysis"]["sha256"]:
         raise ValueError("Input changed since planning; analyze it again")
     style = style or {}
-    facecam = validate_facecam(plan.get("facecam", style.get("facecam")))
-    style = {**style, "facecam": facecam}
     aspect = None
-    if facecam and style.get("layout") == "portrait" and plan["clips"]:
-        stream = next(item for item in probe(input_path)["streams"] if item["codec_type"] == "video")
-        aspect = display_aspect(stream)
+    camera_preference = plan.get("facecam", style.get("facecam", "auto"))
+    use_detected_camera = camera_preference == "auto"
+    fixed_camera = None if use_detected_camera else validate_facecam(camera_preference)
     output_dir = Path(output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     outputs = []
@@ -135,10 +133,17 @@ def render(input_path, plan, output_dir, style=None, top=None):
         if target.exists():
             raise ValueError(f"Output already exists: {target}; use another directory")
         local_style = _clip_style(style, candidate)
+        facecam = validate_facecam(candidate.get("facecam")) if use_detected_camera else fixed_camera
+        local_style["facecam"] = facecam
+        if facecam and local_style["layout"] == "portrait" and aspect is None:
+            stream = next(item for item in probe(input_path)["streams"] if item["codec_type"] == "video")
+            aspect = display_aspect(stream)
         # The nonverbal stretch can contain the stunt itself or its reaction.
         story = candidate.get("evidence", {}).get("kind") in ("gag", "fail", "stunt", "mission")
         ranges = kept_ranges(candidate["start"], candidate["end"], plan["analysis"],
                              plan["transcript"], local_style.get("trim_silence", False) and not story)
+        if story and candidate.get("story_ranges"):
+            ranges = candidate["story_ranges"]
         duration = sum(b-a for a,b in ranges)
         if duration <= 0:
             raise ValueError("Clip has no kept source footage")

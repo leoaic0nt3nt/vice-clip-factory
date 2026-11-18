@@ -21,9 +21,13 @@ def save(path, value):
     target.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
-def plan_media(input_path, config, source_id, transcript_path, top, min_duration, max_duration, *, editorial_cache_dir=None):
+def plan_media(input_path, config, source_id, transcript_path, top, min_duration, max_duration, *,
+               editorial_cache_dir=None, telemetry=None):
     source = check_rights(config, source_id, "edit")
-    framing = {"facecam": validate_facecam(source["facecam"])} if "facecam" in source else {}
+    framing = {}
+    if "facecam" in source:
+        preference = source["facecam"]
+        framing["facecam"] = "auto" if preference == "auto" else validate_facecam(preference)
     analysis = analyze(input_path)
     transcript = read_transcript(transcript_path, analysis["duration"])
     editorial = config.get("autopilot", {}).get("editorial", {})
@@ -33,14 +37,21 @@ def plan_media(input_path, config, source_id, transcript_path, top, min_duration
         cache = editorial_cache_dir or Path(config.get("autopilot", {}).get("output_dir", "output")) / "editorial-cache"
         language = editorial.get("output_language", "ru")
         model = editorial.get("model", DEFAULT_MODEL)
-        story_mode = editorial.get("story_mode", False)
+        mission_mode = editorial.get("mission_mode", False)
+        story_mode = mission_mode or editorial.get("story_mode", False)
+        style = config.get("style", {})
+        auto_facecam = (framing.get("facecam", style.get("facecam", "auto")) == "auto"
+                        and style.get("layout") == "portrait")
         clips = select_editorial_candidates(input_path, analysis, transcript, cache_dir=cache,
             model=model, top=top, min_duration=min_duration,
             max_duration=max_duration, timeout=float(editorial.get("timeout_seconds", 180)),
-            output_language=language, story_mode=story_mode)
+            output_language=language, story_mode=story_mode, mission_mode=mission_mode,
+            auto_facecam=auto_facecam, telemetry=telemetry)
         selector = {"provider": provider, "model": model}
         if story_mode:
             selector["story_mode"] = True
+        if mission_mode:
+            selector["mission_mode"] = True
         return {"version": 2, "source_id": source_id, "analysis": analysis, "transcript": transcript,
                 "clips": clips, "selector": selector, **framing,
                 "limitations": "AI editorial assessment from transcript and sampled frames; not a prediction of reach or income."}
@@ -87,6 +98,7 @@ def parser():
     p.add_argument("--config", default=str(default_config_path()))
     story_action = p.add_mutually_exclusive_group(required=True)
     story_action.add_argument("--on", action="store_true")
+    story_action.add_argument("--missions", action="store_true", help="Сюжетное прохождение с монтажом по эпизодам")
     story_action.add_argument("--off", action="store_true")
     story_action.add_argument("--show", action="store_true")
     p = commands.add_parser("facecam", help="Перенести вебку из кадра стрима в клип")
@@ -95,6 +107,7 @@ def parser():
     facecam_action = p.add_mutually_exclusive_group(required=True)
     facecam_action.add_argument("--rect", nargs=4, type=float, metavar=("X", "Y", "W", "H"))
     facecam_action.add_argument("--off", action="store_true")
+    facecam_action.add_argument("--auto", action="store_true")
     facecam_action.add_argument("--show", action="store_true")
     p.add_argument("--position", choices=["left", "right"])
     p = commands.add_parser("connect",help="Подключить ещё один канал")
@@ -133,6 +146,12 @@ def parser():
         if action=="logs":q.add_argument("--lines",type=int,default=40)
     p = commands.add_parser("analyze")
     p.add_argument("input"); p.add_argument("--output", default="output/analysis.json")
+    p = commands.add_parser("walkthrough", help="Пройти всю запись сюжетного прохождения и собрать лучшие клипы")
+    p.add_argument("input", help="Локальная запись эфира")
+    p.add_argument("--output-dir", required=True)
+    p.add_argument("--config")
+    p.add_argument("--top", type=int, default=3)
+    p.add_argument("--workers", type=int, default=2)
     p = commands.add_parser("plan")
     p.add_argument("input"); p.add_argument("--config", default="examples/config.json"); p.add_argument("--source-id", required=True)
     p.add_argument("--transcript"); p.add_argument("--output", default="output/plan.json")
@@ -180,7 +199,7 @@ def main(argv=None):
     configure_certificates()
     args = parser().parse_args(argv)
     try:
-        config = load_config(args.config) if hasattr(args, "config") and args.command not in ("setup","autopilot") else None
+        config = load_config(args.config) if getattr(args, "config", None) and args.command not in ("setup","autopilot") else None
         result = None
         if args.command == "setup":
             from .onboarding import setup
@@ -215,6 +234,11 @@ def main(argv=None):
                 result=promo.configure(args.config,text=text,url=url,position=position,
                     artwork=args.artwork,drop_artwork=args.no_artwork,start=args.start,duration=args.seconds,
                     cta=args.cta,language=args.language)
+        elif args.command == "walkthrough":
+            from .onboarding import base_config
+            from .walkthrough import scan
+            config = config if config is not None else base_config(Path(args.output_dir) / "config.json")
+            result = scan(args.input, config, args.output_dir, top=args.top, workers=args.workers)
         elif args.command == "market":
             from .onboarding import private_json
             editorial = config.setdefault("autopilot", {}).setdefault("editorial", {})
@@ -225,15 +249,17 @@ def main(argv=None):
         elif args.command == "story":
             from .onboarding import private_json
             autopilot = config.setdefault("autopilot", {})
-            if args.on and autopilot.get("engine") == "medusa":
+            if (args.on or args.missions) and autopilot.get("engine") == "medusa":
                 raise ValueError("Для сюжетного отбора выберите стандартный движок (autopilot.engine=baseline)")
             editorial = autopilot.setdefault("editorial", {})
             if not args.show:
-                editorial["story_mode"] = args.on
-                if args.on:
+                editorial["story_mode"] = args.on or args.missions
+                editorial["mission_mode"] = args.missions
+                if args.on or args.missions:
                     editorial["provider"] = "codex"
                 private_json(args.config, config)
             result = {"story_mode": editorial.get("story_mode", False),
+                      "mission_mode": editorial.get("mission_mode", False),
                       "provider": editorial.get("provider", "baseline"), "applies_to": "new_plans_only"}
         elif args.command == "facecam":
             from .onboarding import private_json
@@ -244,17 +270,21 @@ def main(argv=None):
             if args.position and args.rect is None:
                 raise ValueError("--position используется вместе с --rect")
             source = matches[0]
-            previous = source.get("facecam", config.get("style", {}).get("facecam"))
-            facecam = None
+            previous = source.get("facecam", config.get("style", {}).get("facecam", "auto"))
+            preference = None
             if args.show:
-                facecam = validate_facecam(previous)
+                preference = previous if previous == "auto" else validate_facecam(previous)
+            elif args.auto:
+                preference = "auto"
             elif args.rect is not None:
                 previous_position = previous.get("position", "left") if isinstance(previous, dict) else "left"
-                facecam = validate_facecam({"rect": args.rect, "position": args.position or previous_position})
+                preference = validate_facecam({"rect": args.rect, "position": args.position or previous_position})
             if not args.show:
-                source["facecam"] = facecam
+                source["facecam"] = preference
                 private_json(args.config, config)
-            result = {"source_id": args.source, "facecam": facecam, "applies_to": "new_plans_only"}
+            mode = "auto" if preference == "auto" else "manual" if preference else "off"
+            result = {"source_id": args.source, "facecam": preference if mode == "manual" else None,
+                      "mode": mode, "applies_to": "new_plans_only"}
         elif args.command == "youtube":
             from .publishers import youtube_readiness
             from .rights import get_account

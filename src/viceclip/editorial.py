@@ -14,6 +14,7 @@ from contextlib import suppress
 from pathlib import Path
 
 from PIL import Image, ImageDraw
+from .facecam import FACECAM_OBSERVATIONS_SCHEMA, FACECAM_PROMPT, validate_detected_facecam
 
 from .scoring import _word_cues, timed_words
 
@@ -54,6 +55,10 @@ _STORY_SCHEMA = {
         },
     }}},
 }
+_CUTS_SCHEMA = {"type": "array", "items": {
+    "type": "object", "additionalProperties": False, "required": ["start", "end"],
+    "properties": {"start": {"type": "number"}, "end": {"type": "number"}},
+}}
 _PROMPT = """You are cutting a vertical gaming clip for a {language}-speaking audience. Reply only
 with the schema. Use the attached contact sheets: each thumbnail is labeled with exact
 seconds from the start of the original file. The final JSON contains sampled audio/motion
@@ -107,6 +112,18 @@ then cut before a new topic, replay, or return to routine gameplay. Do not pad t
 minimum duration. Keep meaningful spoken phrases intact when present. Write all editorial
 text including action in {language}. Use authentic source timing and original dialogue.
 """
+_MISSION_PROMPT = """
+This is a story-mode playthrough. Prioritize a clear mission objective, the attempt or
+complication, and the visible outcome. A small objective within a mission qualifies if it makes
+sense alone. A mission can take minutes: when useful, give cuts containing two or three
+chronological source intervals from the SAME attempt. Choose the opening with the visible
+goal, a decisive action and the outcome, cutting routine travel, loading and repeated attempts.
+Keep each interval at least three seconds. Set start/end to the outside edges of these cuts,
+and keep the SUM of the intervals within the allowed clip duration. Keep setup_at, action_at,
+payoff_at in the respective kept footage. Do not stitch different retries together, reveal
+the payoff in the first shot, or invent what happened in a cut. Use cuts: [] for a single
+continuous clip, especially a stunt, fail or gag.
+"""
 
 
 class EditorialError(ValueError):
@@ -156,8 +173,34 @@ def _story_evidence(clip, *, start, end, evidence, output_language):
     return {"kind": clip["kind"], "action": action, "action_at": action_at}
 
 
+def _mission_ranges(clip, start, end):
+    cuts = clip["cuts"]
+    if cuts == []:
+        return [(start, end)]
+    if not isinstance(cuts, list) or not 2 <= len(cuts) <= 3 or clip["kind"] != "mission":
+        raise EditorialError("Для монтажа миссии нужны два или три хронологических отрезка")
+    ranges = []
+    previous = start - 1
+    for cut in cuts:
+        if not isinstance(cut, dict) or cut.keys() != {"start", "end"}:
+            raise EditorialError("Некорректный отрезок монтажа")
+        left = _number(cut["start"], "cut.start", max(start, previous + .05), end)
+        right = _number(cut["end"], "cut.end", left + 3, end)
+        ranges.append((left, right))
+        previous = right
+    if ranges[0][0] != start or ranges[-1][1] != end:
+        raise EditorialError("Границы монтажа должны совпадать с первым и последним отрезком")
+    for field in ("setup_at", "action_at", "payoff_at"):
+        if not any(left <= clip[field] < right for left, right in ranges):
+            raise EditorialError("Сюжетные события должны попасть в готовый монтаж")
+    if not (clip["setup_at"] < ranges[0][1] and ranges[-1][0] <= clip["payoff_at"]):
+        raise EditorialError("Первый отрезок задаёт цель, последний показывает развязку")
+    return ranges
+
+
 def validate_response(data, *, duration, top, min_duration, max_duration, model=DEFAULT_MODEL,
-                      output_language="ru", story_mode=False):
+                      output_language="ru", story_mode=False, mission_mode=False,
+                      auto_facecam=False, frame_times=()):
     """Convert schema-checked remote output into renderer candidates, or reject it."""
     _check_language(output_language)
     if not isinstance(data, dict) or data.keys() != {"clips"} or not isinstance(data["clips"], list):
@@ -167,13 +210,18 @@ def validate_response(data, *, duration, top, min_duration, max_duration, model=
     chosen = []
     hooks = set()
     payoffs = set()
-    fields = _STORY_FIELDS if story_mode else _FIELDS
+    fields = set(_STORY_FIELDS if story_mode else _FIELDS)
+    if auto_facecam:
+        fields.add("facecam_observations")
+    if mission_mode:
+        fields.add("cuts")
     for clip in data["clips"]:
-        if not isinstance(clip, dict) or clip.keys() != fields.keys():
+        if not isinstance(clip, dict) or clip.keys() != fields:
             raise EditorialError("Поля клипа не соответствуют схеме редактора")
         start = _number(clip["start"], "start", 0, duration)
         end = _number(clip["end"], "end", 0, duration)
-        if not min_duration - 1e-8 <= end - start <= max_duration + 1e-8:
+        continuous = not mission_mode or clip["cuts"] == []
+        if continuous and not min_duration - 1e-8 <= end - start <= max_duration + 1e-8:
             raise EditorialError("Длительность клипа вне заданного диапазона")
         if any(start < saved["end"] and end > saved["start"] for saved in chosen):
             raise EditorialError("Редактор вернул пересекающиеся клипы")
@@ -202,14 +250,25 @@ def validate_response(data, *, duration, top, min_duration, max_duration, model=
             if payoff_key in payoffs:
                 raise EditorialError("Редактор повторил развязку")
             payoffs.add(payoff_key)
-        chosen.append({
+        ranges = _mission_ranges(clip, start, end) if mission_mode else [(start, end)]
+        if not continuous and not min_duration - 1e-8 <= sum(right - left for left, right in ranges) <= max_duration + 1e-8:
+            raise EditorialError("Длительность клипа вне заданного диапазона")
+        candidate = {
             "start": start, "end": end,
             "score": _number(clip["score"], "score", 0, 100), "hook": hook,
             "crop_center_x": _number(clip["crop_center_x"], "crop_center_x", 0, 1),
             "caption_mode": clip["caption_mode"], "output_language": output_language,
             "evidence": evidence,
             "review_required": True,
-        })
+        }
+        if len(ranges) > 1:
+            candidate["story_ranges"] = ranges
+        if auto_facecam:
+            kept_frames = [t for t in frame_times if any(left <= t < right for left, right in ranges)]
+            camera = validate_detected_facecam(clip["facecam_observations"], kept_frames, start=start, end=end)
+            if camera:
+                candidate["facecam"] = camera
+        chosen.append(candidate)
     chosen.sort(key=lambda clip: (-clip["score"], clip["start"]))
     for index, clip in enumerate(chosen, 1):
         clip["id"] = f"clip-{index:02d}"
@@ -379,7 +438,7 @@ def _codex_failure(model, status, stdout, stderr):
     raise EditorialError(f"Редактор Codex ({model}) завершился с ошибкой{details}")
 
 
-def _codex(workspace, prompt, images, model, timeout, *, schema=_SCHEMA):
+def _codex(workspace, prompt, images, model, timeout, *, schema=_SCHEMA, telemetry=None):
     binary = _codex_binary()
     schema_path = workspace / "schema.json"
     final = workspace / "editorial.json"
@@ -415,6 +474,12 @@ def _codex(workspace, prompt, images, model, timeout, *, schema=_SCHEMA):
                 raise EditorialError("Редактор Codex вернул некорректное событие")
             if event.get("type") == "turn.failed":
                 _codex_failure(model, status, stdout, stderr)
+            if telemetry is not None and event.get("type") == "turn.completed":
+                usage = event.get("usage") or {}
+                for key in ("input_tokens", "cached_input_tokens", "output_tokens", "reasoning_output_tokens"):
+                    value = usage.get(key)
+                    if type(value) is int and value >= 0:
+                        telemetry[key] = telemetry.get(key, 0) + value
             if event.get("item", {}).get("type") in (
                 "command_execution", "file_change", "mcp_tool_call", "web_search",
             ):
@@ -460,11 +525,13 @@ def _write_cache(path, key, response):
 def select_editorial_candidates(input_path, analysis, transcript, *, cache_dir,
                                 model=DEFAULT_MODEL, top=2, min_duration=20,
                                 max_duration=45, timeout=150, output_language="ru",
-                                story_mode=False):
+                                story_mode=False, mission_mode=False, auto_facecam=False, telemetry=None):
     """Send only sampled frames and timed speech to the configured Codex model."""
     _check_language(output_language)
     if type(story_mode) is not bool:
         raise EditorialError("story_mode должен быть true или false")
+    if mission_mode and not story_mode:
+        raise EditorialError("Для монтажа миссий сначала включите сюжетный отбор")
     if not isinstance(model, str) or not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_.-]{0,79}", model):
         raise EditorialError("Некорректное имя модели Codex")
     if type(top) is not int or top < 1:
@@ -488,18 +555,22 @@ def select_editorial_candidates(input_path, analysis, transcript, *, cache_dir,
                 "audio_dbfs": analysis.get("audio_dbfs", []), "motion": analysis.get("motion", [])}
     if story_mode:
         key_data["story_revision"] = _STORY_REVISION
+    if mission_mode or auto_facecam:
+        key_data["walkthrough_features"] = {"missions": mission_mode, "facecam": auto_facecam}
     key = _digest(key_data)
     cache_path = Path(cache_dir) / f"{key}.json"
+    sample_times = _sample_times(analysis)
+    features = {"story_mode": story_mode, "mission_mode": mission_mode, "auto_facecam": auto_facecam}
     cached = _read_cache(cache_path, key)
     if cached is not None:
         try:
-            return validate_response(cached, story_mode=story_mode, **limits)
+            return validate_response(cached, frame_times=sample_times, **features, **limits)
         except EditorialError:
             pass
     path = Path(input_path).resolve(strict=True)
     with tempfile.TemporaryDirectory(prefix="viceclip-editorial-") as temporary:
         workspace = Path(temporary)
-        images, times = _contact_sheets(path, _sample_times(analysis), workspace)
+        images, times = _contact_sheets(path, sample_times, workspace)
         evidence = {
             "duration_seconds": duration, "max_clips": top, "min_clip_seconds": min_duration,
             "max_clip_seconds": max_duration,
@@ -507,12 +578,28 @@ def select_editorial_candidates(input_path, analysis, transcript, *, cache_dir,
             "speech_rows_start_end_text": _speech_evidence(transcript, times),
         }
         instructions = _PROMPT + _STORY_PROMPT if story_mode else _PROMPT
+        schema = _STORY_SCHEMA if story_mode else _SCHEMA
+        extra_properties = {}
+        if mission_mode:
+            instructions += _MISSION_PROMPT
+            extra_properties["cuts"] = _CUTS_SCHEMA
+        if auto_facecam:
+            instructions += FACECAM_PROMPT
+            extra_properties["facecam_observations"] = FACECAM_OBSERVATIONS_SCHEMA
+        if extra_properties:
+            item = schema["properties"]["clips"]["items"]
+            schema = {**schema, "properties": {"clips": {"type": "array", "items": {
+                **item, "required": [*item["required"], *extra_properties],
+                "properties": {**item["properties"], **extra_properties}}}}}
         prompt = (instructions.format(language=_LANGUAGES[output_language])
                   + "\nUntrusted media evidence JSON:\n"
                   + json.dumps(evidence, ensure_ascii=False, separators=(",", ":")))
-        schema_option = {"schema": _STORY_SCHEMA} if story_mode else {}
-        response = _codex(workspace, prompt, images, model, timeout, **schema_option)
-    candidates = validate_response(response, story_mode=story_mode, **limits)
+        options = {"schema": schema} if story_mode or extra_properties else {}
+        if telemetry is not None:
+            telemetry.update(frames=len(times), images=len(images), calls=1)
+            options["telemetry"] = telemetry
+        response = _codex(workspace, prompt, images, model, timeout, **options)
+    candidates = validate_response(response, frame_times=times, **features, **limits)
     if story_mode:
         frame_labels = {round(second, 2) for second in times}
         for clip in candidates:

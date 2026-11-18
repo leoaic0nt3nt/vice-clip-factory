@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from viceclip.facecam import portrait_center, validate_facecam
+from viceclip.facecam import portrait_center, validate_detected_facecam, validate_facecam
 from viceclip.media import fingerprint, probe
 from viceclip.render import render
 from viceclip.scoring import kept_ranges
@@ -28,6 +28,32 @@ def _source(folder, duration):
 
 
 class FacecamTests(unittest.TestCase):
+    def test_detection_reduces_sampled_stable_panels_to_a_median_rectangle(self):
+        observations = [
+            {"at": 2, "rect": [.01, .30, .19, .27]},
+            {"at": 10, "rect": [0, .31, .20, .28]},
+            {"at": 19.25, "rect": [0, .30, .19, .27]},
+        ]
+        self.assertEqual(validate_detected_facecam(observations, [2, 10, 19.251], start=0, end=22),
+                         {"rect": [0, .30, .19, .27], "position": "left"})
+
+    def test_detection_omits_uncorroborated_or_implausible_panels(self):
+        rect = [.01, .2, .19, .34]
+        observations = [{"at": time, "rect": rect} for time in (1, 3, 6, 10, 15, 19)]
+        available = [entry["at"] for entry in observations]
+        self.assertIsNotNone(validate_detected_facecam(observations, available, start=0, end=20))
+        for rejected in (
+            [], observations[:2], observations[:3], observations[3:],
+            [*observations[:2], {"at": 18, "rect": rect}],
+            [*observations[:2], {"at": 3, "rect": rect}],
+            [*observations[:4], {"at": 19, "rect": [.75, .2, .19, .34]}],
+            [{**entry, "rect": [.4, .3, .19, .34]} for entry in observations],
+            [{**entry, "rect": [.01, .2, .4, .5]} for entry in observations],
+            [{**entry, "rect": [.01, .2, .19, float("nan")]} for entry in observations],
+        ):
+            with self.subTest(rejected=rejected):
+                self.assertIsNone(validate_detected_facecam(rejected, available, start=0, end=20))
+
     def test_validation_rejects_bad_positions_and_regions(self):
         self.assertEqual(validate_facecam({"rect": [0, .1, .4, .3]}),
                          {"rect": [0, .1, .4, .3], "position": "left"})

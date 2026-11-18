@@ -7,6 +7,7 @@ import subprocess
 import sqlite3
 from . import __version__
 from . import integrations
+from .facecam import validate_facecam
 from .media import analyze, doctor, read_transcript
 from .rights import load_config, check_rights
 from .scoring import select_candidates
@@ -21,7 +22,8 @@ def save(path, value):
 
 
 def plan_media(input_path, config, source_id, transcript_path, top, min_duration, max_duration, *, editorial_cache_dir=None):
-    check_rights(config, source_id, "edit")
+    source = check_rights(config, source_id, "edit")
+    framing = {"facecam": validate_facecam(source["facecam"])} if "facecam" in source else {}
     analysis = analyze(input_path)
     transcript = read_transcript(transcript_path, analysis["duration"])
     editorial = config.get("autopilot", {}).get("editorial", {})
@@ -30,18 +32,23 @@ def plan_media(input_path, config, source_id, transcript_path, top, min_duration
         from .editorial import select_editorial_candidates, DEFAULT_MODEL
         cache = editorial_cache_dir or Path(config.get("autopilot", {}).get("output_dir", "output")) / "editorial-cache"
         language = editorial.get("output_language", "ru")
+        model = editorial.get("model", DEFAULT_MODEL)
+        story_mode = editorial.get("story_mode", False)
         clips = select_editorial_candidates(input_path, analysis, transcript, cache_dir=cache,
-            model=editorial.get("model", DEFAULT_MODEL), top=top, min_duration=min_duration,
+            model=model, top=top, min_duration=min_duration,
             max_duration=max_duration, timeout=float(editorial.get("timeout_seconds", 180)),
-            output_language=language)
+            output_language=language, story_mode=story_mode)
+        selector = {"provider": provider, "model": model}
+        if story_mode:
+            selector["story_mode"] = True
         return {"version": 2, "source_id": source_id, "analysis": analysis, "transcript": transcript,
-                "clips": clips, "selector": {"provider": provider, "model": editorial.get("model", DEFAULT_MODEL)},
+                "clips": clips, "selector": selector, **framing,
                 "limitations": "AI editorial assessment from transcript and sampled frames; not a prediction of reach or income."}
     if provider != "baseline":
         raise ValueError("Editorial provider must be codex or baseline")
     return {"version": 1, "source_id": source_id, "analysis": analysis, "transcript": transcript,
             "clips": select_candidates(analysis, transcript, top=top, min_duration=min_duration, max_duration=max_duration),
-            "selector": {"provider": "baseline"},
+            "selector": {"provider": "baseline"}, **framing,
             "limitations": "Rule-based ranking, no gameplay semantics, no auto-tracking, no guarantee of virality. Review setup/payoff, rights and originality."}
 
 
@@ -76,6 +83,20 @@ def parser():
     p = commands.add_parser("market",help="Сменить язык заголовков для новых клипов")
     p.add_argument("--config",default=str(default_config_path()))
     p.add_argument("--language",required=True,choices=["en","ru"])
+    p = commands.add_parser("story", help="Отбор клипов по завязке, действию и развязке")
+    p.add_argument("--config", default=str(default_config_path()))
+    story_action = p.add_mutually_exclusive_group(required=True)
+    story_action.add_argument("--on", action="store_true")
+    story_action.add_argument("--off", action="store_true")
+    story_action.add_argument("--show", action="store_true")
+    p = commands.add_parser("facecam", help="Перенести вебку из кадра стрима в клип")
+    p.add_argument("--config", default=str(default_config_path()))
+    p.add_argument("--source", required=True, help="ID записи, папки inbox или канала")
+    facecam_action = p.add_mutually_exclusive_group(required=True)
+    facecam_action.add_argument("--rect", nargs=4, type=float, metavar=("X", "Y", "W", "H"))
+    facecam_action.add_argument("--off", action="store_true")
+    facecam_action.add_argument("--show", action="store_true")
+    p.add_argument("--position", choices=["left", "right"])
     p = commands.add_parser("connect",help="Подключить ещё один канал")
     p.add_argument("platform",choices=["youtube","instagram"])
     p.add_argument("--config",default=str(default_config_path()))
@@ -201,6 +222,39 @@ def main(argv=None):
             private_json(args.config,config)
             result={"output_language": args.language, "applies_to": "new_renders_only",
                     "subtitle_language": "source", "campaign_language_command": "viceclip promo --language " + args.language}
+        elif args.command == "story":
+            from .onboarding import private_json
+            autopilot = config.setdefault("autopilot", {})
+            if args.on and autopilot.get("engine") == "medusa":
+                raise ValueError("Для сюжетного отбора выберите стандартный движок (autopilot.engine=baseline)")
+            editorial = autopilot.setdefault("editorial", {})
+            if not args.show:
+                editorial["story_mode"] = args.on
+                if args.on:
+                    editorial["provider"] = "codex"
+                private_json(args.config, config)
+            result = {"story_mode": editorial.get("story_mode", False),
+                      "provider": editorial.get("provider", "baseline"), "applies_to": "new_plans_only"}
+        elif args.command == "facecam":
+            from .onboarding import private_json
+            matches = [entry for key in ("sources", "creators") for entry in config.get(key, [])
+                       if entry["id"] == args.source]
+            if len(matches) != 1:
+                raise ValueError(f"Ожидался один источник с ID {args.source}")
+            if args.position and args.rect is None:
+                raise ValueError("--position используется вместе с --rect")
+            source = matches[0]
+            previous = source.get("facecam", config.get("style", {}).get("facecam"))
+            facecam = None
+            if args.show:
+                facecam = validate_facecam(previous)
+            elif args.rect is not None:
+                previous_position = previous.get("position", "left") if isinstance(previous, dict) else "left"
+                facecam = validate_facecam({"rect": args.rect, "position": args.position or previous_position})
+            if not args.show:
+                source["facecam"] = facecam
+                private_json(args.config, config)
+            result = {"source_id": args.source, "facecam": facecam, "applies_to": "new_plans_only"}
         elif args.command == "youtube":
             from .publishers import youtube_readiness
             from .rights import get_account

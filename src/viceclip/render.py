@@ -4,6 +4,7 @@ import math
 import subprocess
 from tempfile import TemporaryDirectory
 from pathlib import Path
+from .facecam import display_aspect, overlay_filters, portrait_center, validate_facecam
 from .media import fingerprint, probe, has_filter
 from .scoring import kept_ranges, remap_captions
 
@@ -84,26 +85,45 @@ def _crop_center(candidate, axis):
     return value
 
 
-def _layout(style, candidate):
-    if style["layout"] == "portrait":
+def _layout(style, candidate, aspect):
+    facecam = style.get("facecam")
+    portrait = style["layout"] == "portrait"
+    facecam_rendered = False
+    if portrait:
         x, y = _crop_center(candidate, "x"), _crop_center(candidate, "y")
+        if facecam:
+            adjusted = portrait_center(facecam["rect"], aspect, x, y)
+            if adjusted is not None:
+                x, y = adjusted
+                facecam_rendered = True
         # Crop the source before upscaling. Clamp the requested center when the
         # desired framing would otherwise reach past either edge.
-        layout = (f"[vc]fps=30,crop=w='min(iw,ih*9/16/sar)':h='min(ih,iw*sar*16/9)'"
+        layout = ("crop=w='min(iw,ih*9/16/sar)':h='min(ih,iw*sar*16/9)'"
                   f":x='clip(iw*{x}-ow/2,0,iw-ow)':y='clip(ih*{y}-oh/2,0,ih-oh)'"
                   ",scale=1080:1920,setsar=1")
     else:
-        layout = "[vc]scale=1080:1080:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:color=0x0A1022,setsar=1,fps=30"
+        layout = "scale=1080:1080:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:color=0x0A1022,setsar=1,fps=30"
     if style.get("sponsor_text") and style["ad_format"] == "legacy":
         position, height = (490, 150) if style.get("sponsor_position") == "top" else (1500, 175)
         layout += f",drawbox=x=60:y={position}:w=960:h={height}:color=0x234DFF:t=fill"
-    return layout + "[layout]"
+    if not facecam_rendered:
+        fps = "fps=30," if portrait else ""
+        return [f"[vc]{fps}{layout}[layout]"], False
+    promo_default = "bottom" if style["ad_format"] == "legacy" else "top"
+    top_promo = bool(style.get("sponsor_text") and style.get("sponsor_position", promo_default) == "top")
+    return ["[vc]fps=30,split=2[base][face]", f"[base]{layout}[game]", *overlay_filters(facecam, top_promo)], True
 
 
 def render(input_path, plan, output_dir, style=None, top=None):
     if fingerprint(input_path) != plan["analysis"]["sha256"]:
         raise ValueError("Input changed since planning; analyze it again")
     style = style or {}
+    facecam = validate_facecam(plan.get("facecam", style.get("facecam")))
+    style = {**style, "facecam": facecam}
+    aspect = None
+    if facecam and style.get("layout") == "portrait" and plan["clips"]:
+        stream = next(item for item in probe(input_path)["streams"] if item["codec_type"] == "video")
+        aspect = display_aspect(stream)
     output_dir = Path(output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     outputs = []
@@ -115,7 +135,10 @@ def render(input_path, plan, output_dir, style=None, top=None):
         if target.exists():
             raise ValueError(f"Output already exists: {target}; use another directory")
         local_style = _clip_style(style, candidate)
-        ranges = kept_ranges(candidate["start"], candidate["end"], plan["analysis"], plan["transcript"], local_style.get("trim_silence", False))
+        # The nonverbal stretch can contain the stunt itself or its reaction.
+        story = candidate.get("evidence", {}).get("kind") in ("gag", "fail", "stunt", "mission")
+        ranges = kept_ranges(candidate["start"], candidate["end"], plan["analysis"],
+                             plan["transcript"], local_style.get("trim_silence", False) and not story)
         duration = sum(b-a for a,b in ranges)
         if duration <= 0:
             raise ValueError("Clip has no kept source footage")
@@ -151,7 +174,8 @@ def render(input_path, plan, output_dir, style=None, top=None):
             filters.append("".join(streams)+f"concat=n={len(ranges)}:v=1:a=1[vc][ac]")
         else:
             filters.append("".join(streams)+f"concat=n={len(ranges)}:v=1:a=0[vc]")
-        filters.append(_layout(local_style, candidate))
+        layout_filters, facecam_rendered = _layout(local_style, candidate, aspect)
+        filters.extend(layout_filters)
         command = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-filter_complex_threads", "1",
                    "-ss", str(origin), "-t", str(source_span), "-i", str(Path(input_path).resolve())]
         use_ass = (local_style["layout"] == "fit" and local_style["ad_format"] == "legacy"
@@ -178,6 +202,8 @@ def render(input_path, plan, output_dir, style=None, top=None):
                     "caption_mode": local_style["caption_mode"], "hook_duration": hook_end,
                     "ad_format": local_style["ad_format"] if local_style.get("sponsor_text") else None,
                     "note": "Human editorial review required before queue approval."}
+        if facecam:
+            metadata["facecam"] = {**facecam, "rendered": facecam_rendered}
         target.with_suffix(".json").write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
         outputs.append(str(target))
     return outputs

@@ -45,7 +45,8 @@ def base_config(config_path):
              "source_ids":[],"accounts":[],"auto_approve":True,"min_score":45,
              "clips_per_source":2,"min_clip_seconds":20,"max_clip_seconds":40,
              "posting_gap_seconds":14400,"max_source_seconds":14400,
-             "editorial":{"provider":"codex","model":"gpt-6.2-sol","timeout_seconds":180,"output_language":"en"},
+             "editorial":{"provider":"codex","model":"gpt-6.2-sol","timeout_seconds":180,"output_language":"en",
+                          "story_mode":True},
              "asr":{"enabled":True,"provider":"faster-whisper","model":"small","device":"cpu","language":None}}}
 
 

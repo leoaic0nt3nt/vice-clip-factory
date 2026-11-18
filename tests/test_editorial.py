@@ -21,6 +21,11 @@ def response_clip(**changes):
     }
 
 
+def story_clip(**changes):
+    return response_clip(kind="fail", action="Водитель жмёт газ и пытается выровняться.",
+                         action_at=19, **changes)
+
+
 LIMITS = dict(duration=120, top=2, min_duration=20, max_duration=45)
 
 
@@ -58,6 +63,34 @@ class ResponseTests(unittest.TestCase):
         for data in invalid:
             with self.subTest(data=data), self.assertRaises(editorial.EditorialError):
                 editorial.validate_response(data, **LIMITS)
+
+    def test_story_mode_requires_an_early_setup_and_a_visible_payoff(self):
+        clip = story_clip()
+        clips = editorial.validate_response({"clips": [clip]}, story_mode=True, **LIMITS)
+        self.assertEqual(clips[0]["evidence"]["kind"], "fail")
+        self.assertEqual(clips[0]["evidence"]["action"], clip["action"])
+        self.assertEqual(clips[0]["evidence"]["action_at"], 19)
+        self.assertEqual(editorial.validate_response({"clips": []}, story_mode=True, **LIMITS), [])
+        invalid = [
+            response_clip(),
+            {**clip, "kind": "banter"},
+            {**clip, "setup_at": 11},
+            {**clip, "action_at": 7},
+            {**clip, "action_at": 28.1},
+            {**clip, "payoff_at": 29.1},
+            {**clip, "payoff_at": 19.5},
+            {**clip, "action": clip["payoff"]},
+        ]
+        for candidate in invalid:
+            with self.subTest(clip=candidate), self.assertRaises(editorial.EditorialError):
+                editorial.validate_response({"clips": [candidate]}, story_mode=True, **LIMITS)
+
+    def test_story_mode_rejects_a_repeated_payoff(self):
+        second = {**story_clip(), "start": 35, "end": 60, "setup_at": 38,
+                  "action_at": 49, "payoff_at": 58, "hook": "Так можно доехать?"}
+        with self.assertRaisesRegex(editorial.EditorialError, "повторил развязку"):
+            editorial.validate_response({"clips": [story_clip(), second]}, story_mode=True,
+                                        **LIMITS)
 
 
 class RequestTests(unittest.TestCase):
@@ -133,6 +166,26 @@ class RequestTests(unittest.TestCase):
             self.assertEqual(request.call_count, 2)
         with self.assertRaisesRegex(editorial.EditorialError, "на английском"):
             editorial.validate_response({"clips": [response_clip()]}, output_language="en", **LIMITS)
+
+    def test_story_mode_requires_labeled_source_frames_and_uses_a_separate_cache(self):
+        observed = [6.0, 8.0, 19.0, 28.0]
+        with patch.object(editorial, "_contact_sheets", return_value=(["frames.jpg"], observed)), \
+                patch.object(editorial, "_codex", side_effect=[
+                    {"clips": [response_clip()]}, {"clips": [{**story_clip(), "action_at": 18}]},
+                    {"clips": [story_clip()]},
+                ]) as request:
+            classic = self.choose()
+            with self.assertRaisesRegex(editorial.EditorialError, "наблюдаемые кадры"):
+                self.choose(story_mode=True)
+            self.assertEqual(len(list(self.cache_dir.glob("*.json"))), 1)
+            story = self.choose(story_mode=True)
+            self.assertEqual(self.choose(story_mode=True), story)
+            self.assertEqual(self.choose(), classic)
+            self.assertEqual(request.call_count, 3)
+            strict_request = request.call_args
+            self.assertIn("cold open", strict_request.args[1])
+            self.assertIn("action_at", strict_request.kwargs["schema"]["properties"]["clips"]
+                          ["items"]["required"])
 
     def test_editorial_failure_propagates_and_is_never_cached(self):
         with patch.object(editorial, "_contact_sheets", return_value=(["frames.jpg"], [6.0])), \

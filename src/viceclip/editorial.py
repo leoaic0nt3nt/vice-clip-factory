@@ -20,8 +20,12 @@ from .scoring import _word_cues, timed_words
 DEFAULT_MODEL = "gpt-6.2-sol"
 MAX_SOURCE_SECONDS = 14400
 _REVISION = 1
+_STORY_REVISION = 1
 _CAPTION_MODES = ("words", "phrase", "meme")
 _LANGUAGES = {"ru": "Russian", "en": "English"}
+_STORY_KINDS = ("gag", "fail", "stunt", "mission")
+_STORY_SETUP_SECONDS = 5
+_STORY_TAIL_SECONDS = (1, 10)
 _FIELDS = {
     "start": "number", "end": "number", "score": "number", "hook": "string",
     "setup": "string", "payoff": "string", "why": "string",
@@ -36,6 +40,19 @@ _SCHEMA = {
     }}},
     "required": ["clips"],
     "additionalProperties": False,
+}
+_STORY_FIELDS = {
+    **_FIELDS, "kind": "string", "action": "string", "action_at": "number",
+}
+_STORY_SCHEMA = {
+    **_SCHEMA,
+    "properties": {"clips": {"type": "array", "items": {
+        "type": "object", "additionalProperties": False, "required": list(_STORY_FIELDS),
+        "properties": {
+            **{name: {"type": kind} for name, kind in _STORY_FIELDS.items()},
+            "kind": {"type": "string", "enum": list(_STORY_KINDS)},
+        },
+    }}},
 }
 _PROMPT = """You are cutting a vertical gaming clip for a {language}-speaking audience. Reply only
 with the schema. Use the attached contact sheets: each thumbnail is labeled with exact
@@ -63,6 +80,32 @@ approximate horizontal center of the main action, 0 left to 1 right; use 0.5 whe
 or the actor moves across the center. Use caption_mode words for energetic clear speech,
 phrase for normal conversation, meme for a pause/reaction-driven gag. Score from 0 to 100
 is editorial ranking (clarity, novelty and completeness). Put the strongest clip first.
+"""
+_STORY_PROMPT = """
+Use these stricter rules for complete stories. Pick a gag (a visual joke or comic situation
+with a punchline), fail (an attempt visibly goes wrong), stunt (a risky move visibly lands
+or crashes), or mission (an understandable goal reaches a visible success, failure or twist).
+Routine driving, car showcases, nostalgic commentary, banter, chat-only jokes, and
+unresolved fights or chases are ineligible. A big reaction or an audio spike alone is
+insufficient. Choose one independent event per short, with different actions and outcomes.
+Return fewer clips or an empty list if evidence is weak.
+
+Treat the first seconds as a cold open. Start with the game situation or an immediate
+decision, goal, or surprise. The opening hook should make the viewer want to see the
+outcome without giving it away, with a concrete detail the clip actually shows. Establish
+the stakes in the first 3 seconds when possible, never more than 5 seconds from start.
+In setup, say what the viewer can understand before the decisive move. In action, name the
+visible move or change. In payoff, describe the actual visible outcome that resolves the
+setup. These are three beats of one event, not three descriptions of the same image.
+Use actual labeled frame times for action_at and payoff_at, in chronological order.
+Only use the same frame for both if it plainly shows the move and the consequence.
+Related speech can establish context or support a reaction. It cannot establish an unseen
+stunt or result. Do not infer a collision, win, joke or explanation from gaps in the evidence.
+
+Leave 1–10 seconds after the payoff frame to show the result and any resolving reaction,
+then cut before a new topic, replay, or return to routine gameplay. Do not pad to reach
+minimum duration. Keep meaningful spoken phrases intact when present. Write all editorial
+text including action in {language}. Use authentic source timing and original dialogue.
 """
 
 
@@ -98,8 +141,23 @@ def _line(value, name, limit, output_language):
     return normalized
 
 
+def _story_evidence(clip, *, start, end, evidence, output_language):
+    setup_at, payoff_at = evidence["setup_at"], evidence["payoff_at"]
+    if clip["kind"] not in _STORY_KINDS:
+        raise EditorialError("Недопустимый тип игровой истории")
+    if setup_at - start > _STORY_SETUP_SECONDS:
+        raise EditorialError("Завязка истории должна быть в первые 5 секунд")
+    action_at = _number(clip["action_at"], "action_at", setup_at, payoff_at)
+    if not _STORY_TAIL_SECONDS[0] <= end - payoff_at <= _STORY_TAIL_SECONDS[1]:
+        raise EditorialError("После развязки нужно оставить от 1 до 10 секунд")
+    action = _line(clip["action"], "action", 240, output_language)
+    if len({text.casefold() for text in (evidence["setup"], action, evidence["payoff"])}) != 3:
+        raise EditorialError("Завязка, действие и развязка должны описывать разные моменты")
+    return {"kind": clip["kind"], "action": action, "action_at": action_at}
+
+
 def validate_response(data, *, duration, top, min_duration, max_duration, model=DEFAULT_MODEL,
-                      output_language="ru"):
+                      output_language="ru", story_mode=False):
     """Convert schema-checked remote output into renderer candidates, or reject it."""
     _check_language(output_language)
     if not isinstance(data, dict) or data.keys() != {"clips"} or not isinstance(data["clips"], list):
@@ -108,8 +166,10 @@ def validate_response(data, *, duration, top, min_duration, max_duration, model=
         raise EditorialError("Редактор вернул слишком много клипов")
     chosen = []
     hooks = set()
+    payoffs = set()
+    fields = _STORY_FIELDS if story_mode else _FIELDS
     for clip in data["clips"]:
-        if not isinstance(clip, dict) or clip.keys() != _FIELDS.keys():
+        if not isinstance(clip, dict) or clip.keys() != fields.keys():
             raise EditorialError("Поля клипа не соответствуют схеме редактора")
         start = _number(clip["start"], "start", 0, duration)
         end = _number(clip["end"], "end", 0, duration)
@@ -128,18 +188,26 @@ def validate_response(data, *, duration, top, min_duration, max_duration, model=
         hooks.add(hook_key)
         if clip["caption_mode"] not in _CAPTION_MODES:
             raise EditorialError("Недопустимый режим субтитров")
+        evidence = {
+            "mode": "codex_semantic", "model": model,
+            "setup": _line(clip["setup"], "setup", 240, output_language),
+            "payoff": _line(clip["payoff"], "payoff", 240, output_language),
+            "why": _line(clip["why"], "why", 240, output_language),
+            "setup_at": setup_at, "payoff_at": payoff_at,
+        }
+        if story_mode:
+            evidence.update(_story_evidence(clip, start=start, end=end, evidence=evidence,
+                                            output_language=output_language))
+            payoff_key = re.sub(r"[\W_]+", "", evidence["payoff"].casefold())
+            if payoff_key in payoffs:
+                raise EditorialError("Редактор повторил развязку")
+            payoffs.add(payoff_key)
         chosen.append({
             "start": start, "end": end,
             "score": _number(clip["score"], "score", 0, 100), "hook": hook,
             "crop_center_x": _number(clip["crop_center_x"], "crop_center_x", 0, 1),
             "caption_mode": clip["caption_mode"], "output_language": output_language,
-            "evidence": {
-                "mode": "codex_semantic", "model": model,
-                "setup": _line(clip["setup"], "setup", 240, output_language),
-                "payoff": _line(clip["payoff"], "payoff", 240, output_language),
-                "why": _line(clip["why"], "why", 240, output_language),
-                "setup_at": setup_at, "payoff_at": payoff_at,
-            },
+            "evidence": evidence,
             "review_required": True,
         })
     chosen.sort(key=lambda clip: (-clip["score"], clip["start"]))
@@ -311,11 +379,11 @@ def _codex_failure(model, status, stdout, stderr):
     raise EditorialError(f"Редактор Codex ({model}) завершился с ошибкой{details}")
 
 
-def _codex(workspace, prompt, images, model, timeout):
+def _codex(workspace, prompt, images, model, timeout, *, schema=_SCHEMA):
     binary = _codex_binary()
-    schema = workspace / "schema.json"
+    schema_path = workspace / "schema.json"
     final = workspace / "editorial.json"
-    schema.write_text(json.dumps(_SCHEMA), encoding="utf-8")
+    schema_path.write_text(json.dumps(schema), encoding="utf-8")
     command = [
         binary, "-a", "never", "exec", "--skip-git-repo-check", "--ignore-user-config",
         "--ignore-rules", "--ephemeral", "--sandbox", "read-only", "--json",
@@ -324,7 +392,7 @@ def _codex(workspace, prompt, images, model, timeout):
         "--disable", "unified_exec", "--disable", "code_mode_host",
         "--disable", "apps", "--disable", "plugins",
         "--disable", "hooks", "--disable", "browser_use", "--disable", "computer_use",
-        "-m", model, "--output-schema", str(schema), "-o", str(final),
+        "-m", model, "--output-schema", str(schema_path), "-o", str(final),
     ]
     for image in images:
         command.extend(("-i", str(image)))
@@ -391,9 +459,12 @@ def _write_cache(path, key, response):
 
 def select_editorial_candidates(input_path, analysis, transcript, *, cache_dir,
                                 model=DEFAULT_MODEL, top=2, min_duration=20,
-                                max_duration=45, timeout=150, output_language="ru"):
+                                max_duration=45, timeout=150, output_language="ru",
+                                story_mode=False):
     """Send only sampled frames and timed speech to the configured Codex model."""
     _check_language(output_language)
+    if type(story_mode) is not bool:
+        raise EditorialError("story_mode должен быть true или false")
     if not isinstance(model, str) or not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_.-]{0,79}", model):
         raise EditorialError("Некорректное имя модели Codex")
     if type(top) is not int or top < 1:
@@ -412,14 +483,17 @@ def select_editorial_candidates(input_path, analysis, transcript, *, cache_dir,
     # Keep the cache key for existing Russian jobs. Other locales use separate entries.
     if output_language != "ru":
         limits["output_language"] = output_language
-    key = _digest({"revision": _REVISION, "input": analysis["sha256"],
-                   "transcript": _digest(transcript), "limits": limits,
-                   "audio_dbfs": analysis.get("audio_dbfs", []), "motion": analysis.get("motion", [])})
+    key_data = {"revision": _REVISION, "input": analysis["sha256"],
+                "transcript": _digest(transcript), "limits": limits,
+                "audio_dbfs": analysis.get("audio_dbfs", []), "motion": analysis.get("motion", [])}
+    if story_mode:
+        key_data["story_revision"] = _STORY_REVISION
+    key = _digest(key_data)
     cache_path = Path(cache_dir) / f"{key}.json"
     cached = _read_cache(cache_path, key)
     if cached is not None:
         try:
-            return validate_response(cached, **limits)
+            return validate_response(cached, story_mode=story_mode, **limits)
         except EditorialError:
             pass
     path = Path(input_path).resolve(strict=True)
@@ -432,9 +506,18 @@ def select_editorial_candidates(input_path, analysis, transcript, *, cache_dir,
             "signal_rows_seconds_audio_dbfs_motion": [[t, *_signals(analysis, int(t))] for t in times],
             "speech_rows_start_end_text": _speech_evidence(transcript, times),
         }
-        prompt = _PROMPT.format(language=_LANGUAGES[output_language]) + "\nUntrusted media evidence JSON:\n" + json.dumps(
-            evidence, ensure_ascii=False, separators=(",", ":"))
-        response = _codex(workspace, prompt, images, model, timeout)
-    candidates = validate_response(response, **limits)
+        instructions = _PROMPT + _STORY_PROMPT if story_mode else _PROMPT
+        prompt = (instructions.format(language=_LANGUAGES[output_language])
+                  + "\nUntrusted media evidence JSON:\n"
+                  + json.dumps(evidence, ensure_ascii=False, separators=(",", ":")))
+        schema_option = {"schema": _STORY_SCHEMA} if story_mode else {}
+        response = _codex(workspace, prompt, images, model, timeout, **schema_option)
+    candidates = validate_response(response, story_mode=story_mode, **limits)
+    if story_mode:
+        frame_labels = {round(second, 2) for second in times}
+        for clip in candidates:
+            if any(round(clip["evidence"][field], 2) not in frame_labels
+                   for field in ("action_at", "payoff_at")):
+                raise EditorialError("Действие и развязка должны ссылаться на наблюдаемые кадры")
     _write_cache(cache_path, key, response)
     return candidates

@@ -341,7 +341,10 @@ class Autopilot:
         creators = {c["id"]: c for c in self.config.get("creators", []) if c.get("enabled", True)}
         for row in self.db.execute("SELECT source_json FROM media_jobs"):
             source = json.loads(row[0])
-            if source["id"] not in sources and (source.get("creator") in creators or self._query_selected(source)):
+            creator = creators.get(source.get("creator"))
+            if source["id"] not in sources and (creator or self._query_selected(source)):
+                if creator and "facecam" in creator and "facecam" not in source:
+                    source["facecam"] = creator["facecam"]
                 sources[source["id"]] = source
         return {**self.config, "sources": list(sources.values())}
 
